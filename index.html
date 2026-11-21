@@ -267,7 +267,7 @@
               <h1>Air Harp <span class="thin">— strings of light, played with your hands</span></h1>
             </div>
           </div>
-          <p>Pick your instrument first — harp, guitar, banjo, ukulele, violin, soft synth or bell — then hold your hands up to the camera. Threads stretch between your fingertips — pull them longer for low notes, shorter for high ones, and flick to pluck. On the stretch line, Chords (on by default) plays a whole chord that moves as you stretch; turn Chords off for a single note.</p>
+          <p>Pick your instrument first — harp, guitar, banjo, ukulele, violin, soft synth or bell — then hold your hands up to the camera. Tap <b>Guitar · 6 strings</b> for six strings at once, or <b>Add a line</b> to keep several different strings on screen. Threads stretch between your fingertips — pull them longer for low notes, shorter for high ones, and flick to pluck. On the stretch line, Chords (on by default) plays a whole chord that moves as you stretch; turn Chords off for a single note.</p>
         </div>
         <div class="live-stats" id="liveStats">notes played <b id="statNotes">0</b> · strings <b id="statStrings">0</b></div>
       </div>
@@ -321,6 +321,8 @@
             <option value="bell">Bell</option>
           </select>
           <button class="btn primary small" id="btnCreateLine" type="button" title="Start making a line, step by step">Create a line</button>
+          <button class="btn small" id="btnAddLine" type="button" title="Keep the lines you have and add another one">Add a line</button>
+          <button class="btn small" id="btnGuitar6" type="button" title="Lay out six guitar strings at once: E A D G B E">Guitar · 6 strings</button>
           <button class="btn small" id="btnNewLine" type="button" title="Clear the locked line and make a new one">New line</button>
         </div>
         <div class="ctl-group grow">
@@ -343,6 +345,7 @@
             <li><b>Stretch or shrink a thread</b> by moving your hands apart or together — longer is lower, shorter is higher, just like a real string.</li>
             <li><b>Flick a fingertip</b> quickly to pluck. The faster the flick, the louder the note, and sparks run along the thread.</li>
             <li>With <b>one hand</b>, threads fan out from your thumb to each fingertip instead — open and close your hand to change pitch, flick to play.</li>
+            <li><b>Several lines at once.</b> Tap <b>Add a line</b> after locking one line and make another — up to 6 lines on screen, each its own string with its own chord. <b>Guitar · 6 strings</b> lays out six strings at once, tuned E A D G B E. <b>Left hand chooses, right hand plays:</b> pinch an end of a line with one hand to stretch it and choose its chord, touch a line with your other hand to play it — at the same time. Tap <b>New line</b> to clear them all and start over.</li>
             <li><b>Stretch line (two hands).</b> First pick your <b>Instrument</b> above — harp, guitar, banjo, ukulele, violin, soft synth or bell — and leave <b>Chords</b> on if you want a chord, or turn it off for a single note. Then tap <b>Create a line</b> and follow the two steps on screen: <b>Step 1</b> — pinch thumb + index (the big finger) on ONE hand to set the first end; <b>Step 2</b> — pinch thumb + index on your OTHER hand to set the second end, and the line locks between them. Then <b>pinch one end and pull it</b> to stretch the line — the chord (or note) glides smoothly, no steps (longer is lower, shorter is higher). <b>Touch the line with a fingertip of your other hand</b> to sound it while you stretch — hold it there to keep it going, lift it to stop. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, touch and hold the line to play.</li>
             <li>No camera? The <b>touch harp</b> gives you ten strings on screen: press and drag across them, tap them, or use keys <span class="kbd">A</span>–<span class="kbd">;</span>.</li>
           </ol>
@@ -406,12 +409,22 @@
 
       /* Stretch Line mode: one line locked in space, stretched by hand, played by strumming.
          Deliberately quiet: nothing plays while you move or stretch — only a flick across the line sounds. */
-      var stretchLine = null;       // {a:{x,y}, b:{x,y}} once locked
-      var stretchLenSmooth = 0;     // smoothed length, kills camera jitter
+      var stretchLine = null;       // the line currently sounding (first of stretchLines, for compat)
+      var stretchLines = [];        // every locked line: {a, b, lenSmooth, refLen, tuning, noteName}
+      var activeLine = null;        // the line the playing hand is touching right now
+      var stretchLenSmooth = 0;     // smoothed length of the sounding line, kills camera jitter
       var stretchNoteName = "—";
-      var stretchHold = null;       // "a" | "b" | null — which end a pinched hand is dragging
+      var stretchHold = null;       // {line, end, hand} — which end of which line a pinched hand is dragging
       var createStep = 0;         // guided line creation: 0 = off, 1 = waiting for first pinch, 2 = waiting for other hand
       var createAnchorA = null;   // pinch point of the first hand
+      var createAppend = false;   // true = "Add a line" (keep existing lines), false = "Create a line" (start fresh)
+      var touchDragLine = null;   // touch fallback: which line an end-drag is moving
+      var touchAddLine = false;   // touch fallback: the next drag draws a NEW line into stretchLines
+      var GUITAR_TUNING = [       // standard guitar, low to high: E2 A2 D3 G3 B3 E4
+        { freq: 82.41, name: "E2" }, { freq: 110.00, name: "A2" },
+        { freq: 146.83, name: "D3" }, { freq: 196.00, name: "G3" },
+        { freq: 246.94, name: "B3" }, { freq: 329.63, name: "E4" }
+      ];
       var bowVoices = []; // [{osc, lfo, gain, filter, ratio}] — one voice per chord note
       var bowActive = false, bowFreq = 0, bowSparkT0 = 0;
       var chordOn = true; // stretch line plays a chord by default; toggle it off for a single note
@@ -840,17 +853,43 @@
       }
       function isPinch(pts) { return distPt(pts[4], pts[8]) < W * 0.07; }
       function pinchPoint(pts) { return { x: (pts[4].x + pts[8].x) / 2, y: (pts[4].y + pts[8].y) / 2 }; }
-      function stretchPitch() {
-        if (!stretchLine) return null;
-        var len = distPt(stretchLine.a, stretchLine.b);
-        stretchLenSmooth = stretchLenSmooth ? stretchLenSmooth * 0.82 + len * 0.18 : len;
-        var lenNorm = clamp(stretchLenSmooth / (W * 0.82), 0, 1);
-        var mf = 84 - lenNorm * 33; // continuous glide, C6 down to C3 — no steps
-        var p = { freq: midiToFreq(mf), name: chordRootName(mf) };
-        if (p.name !== stretchNoteName) { stretchNoteName = p.name; noteReadout.textContent = p.name; }
-        return p;
+      function freqToMidi(f) { return 69 + 12 * Math.log(f / 440) / Math.log(2); }
+      function addStretchLine(a, b, tuning) {
+        var len = distPt(a, b);
+        var line = { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y }, lenSmooth: len, refLen: len || 1, tuning: tuning || null, noteName: "—" };
+        stretchLines.push(line);
+        stretchLine = line; activeLine = line;
+        return line;
       }
-      function drawStretchLine(a, b, locked, now) {
+      /* Pitch of one line. A guitar string is tuned: stretching bends it
+         away from its tuning (longer = lower, like slackening the string).
+         Any other line glides continuously with its length, C6 down to C3. */
+      function linePitch(line) {
+        if (!line) return null;
+        var len = distPt(line.a, line.b);
+        line.lenSmooth = line.lenSmooth ? line.lenSmooth * 0.82 + len * 0.18 : len;
+        if (line.tuning) {
+          var ratio = clamp(line.refLen / Math.max(1, line.lenSmooth), 0.5, 2);
+          var freq = line.tuning.freq * ratio;
+          var name = midiName(freqToMidi(freq));
+          if (chordOn) name += " maj";
+          line.noteName = name;
+          return { freq: freq, name: name };
+        }
+        var lenNorm = clamp(line.lenSmooth / (W * 0.82), 0, 1);
+        var mf = 84 - lenNorm * 33;
+        var pr = { freq: midiToFreq(mf), name: chordRootName(mf) };
+        line.noteName = pr.name;
+        return pr;
+      }
+      function stretchPitch(line) {
+        var ln = line || activeLine || stretchLine;
+        if (!ln) return null;
+        var pp = linePitch(ln);
+        if (pp && pp.name !== stretchNoteName) { stretchNoteName = pp.name; noteReadout.textContent = pp.name; }
+        return pp;
+      }
+      function drawStretchLine(a, b, locked, now, label) {
         var age = now - stretchVib.vibT0;
         var amp = locked && age < 900 ? stretchVib.vibAmp * Math.exp(-age / 260) : 0;
         var phase = (now / 1000) * stretchVib.vibFreq * Math.PI * 2;
@@ -893,7 +932,7 @@
           ctx.font = "700 17px 'IBM Plex Mono', monospace";
           ctx.textAlign = "center";
           ctx.shadowColor = "rgba(0,0,0,0.8)"; ctx.shadowBlur = 6;
-          ctx.fillText(stretchNoteName, mx, my - 16);
+          ctx.fillText(label || stretchNoteName, mx, my - 16);
           ctx.restore();
         }
       }
@@ -931,27 +970,28 @@
             var pp = pinchPoint(hs[hj].pts);
             if (distPt(pp, createAnchorA) < W * 0.12) continue; // same hand as step 1 — wait for the other one
             drawStretchLine(createAnchorA, pp, false, now); // preview while the second hand pinches
-            stretchLine = { a: { x: createAnchorA.x, y: createAnchorA.y }, b: { x: pp.x, y: pp.y } };
-            stretchLenSmooth = distPt(createAnchorA, pp);
+            if (!createAppend) { stopBow(); stretchLines = []; }
+            addStretchLine(createAnchorA, pp, null);
             stretchPitch();
-            createStep = 0; createAnchorA = null;
-            stageHint.textContent = "Line locked — pinch an end to stretch it, touch it with your other hand to play";
+            createStep = 0; createAnchorA = null; createAppend = false; touchAddLine = false;
+            stageHint.textContent = stretchLines.length > 1
+              ? stretchLines.length + " lines — pinch an end with one hand to choose its chord, touch a line with your other hand to play it"
+              : "Line locked — pinch an end to stretch it, touch it with your other hand to play";
             return;
           }
         }
       }
       function updateStretchLine(now) {
         var hs = latestHands.map(function (h) { return { pts: handPx(h) }; });
-        statStrings.textContent = stretchLine ? 1 : 0;
-        if (createStep > 0 && !stretchLine) { updateCreateLine(hs, now); return; }
-        if (!stretchLine) {
+        statStrings.textContent = stretchLines.length;
+        if (createStep > 0) { updateCreateLine(hs, now); return; }
+        if (stretchLines.length === 0) {
           if (hs.length === 2) {
             var sorted = hs.slice().sort(function (x, y) { return x.pts[0].x - y.pts[0].x; });
             var a = sorted[0].pts[8], b = sorted[1].pts[8];
             drawStretchLine(a, b, false, now);
             if (isPinch(sorted[0].pts) && isPinch(sorted[1].pts)) {
-              stretchLine = { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } };
-              stretchLenSmooth = distPt(a, b);
+              addStretchLine(a, b, null);
               stretchPitch();
               stageHint.textContent = "Line locked — pinch an end to stretch it, touch it with your other hand to play";
             } else {
@@ -962,48 +1002,57 @@
           }
           return;
         }
-        /* locked: pinch an end and drag it to stretch */
+        /* locked lines: pinch an end of ANY line and drag it to stretch that line.
+           One hand chooses (pinch + pull an end), the other hand plays. */
         var held = false;
         hs.forEach(function (h, hi) {
           var pp = pinchPoint(h.pts);
           if (stretchHold && stretchHold.hand === hi) {
-            if (isPinch(h.pts)) { stretchLine[stretchHold.end] = { x: pp.x, y: pp.y }; held = true; }
+            if (isPinch(h.pts)) { stretchHold.line[stretchHold.end] = { x: pp.x, y: pp.y }; held = true; }
             else stretchHold = null;
             return;
           }
           if (!isPinch(h.pts)) return;
-          ["a", "b"].forEach(function (end) {
-            if (distPt(pp, stretchLine[end]) < W * 0.12) {
-              stretchHold = { end: end, hand: hi };
-              stretchLine[end] = { x: pp.x, y: pp.y };
+          for (var li = 0; li < stretchLines.length; li++) {
+            var line = stretchLines[li];
+            var found = null;
+            ["a", "b"].forEach(function (end) {
+              if (!found && distPt(pp, line[end]) < W * 0.12) found = end;
+            });
+            if (found) {
+              stretchHold = { line: line, end: found, hand: hi };
+              line[found] = { x: pp.x, y: pp.y };
               held = true;
+              break;
             }
-          });
+          }
         });
         if (!held && stretchHold) {
-          /* keep holding if the same hand is still pinching but moved away from the end */
           var hh = hs[stretchHold.hand];
           if (hh && isPinch(hh.pts)) {
             var pp2 = pinchPoint(hh.pts);
-            stretchLine[stretchHold.end] = { x: pp2.x, y: pp2.y };
+            stretchHold.line[stretchHold.end] = { x: pp2.x, y: pp2.y };
             held = true;
           } else stretchHold = null;
         }
-        var p = stretchPitch();
-        /* bow: a fingertip of the FREE hand touching the line sounds it.
-           The stretching hand only stretches — the other hand plays, at the
-           same time. Lift the finger and the sound fades. */
+        /* bow: a fingertip of a FREE hand touching ANY line sounds that line.
+           Left hand can pinch an end to choose the chord, right hand touches
+           a line to play it — at the same time. Lift the finger to stop. */
         var BOW_TIPS = [8, 12, 16, 20];
-        var touchPt = null, touchD = 1e9;
+        var touchPt = null, touchD = 1e9, touchLine = null;
         hs.forEach(function (h, hi) {
-          if (stretchHold && stretchHold.hand === hi) return; // stretching hand — busy holding
+          if (stretchHold && stretchHold.hand === hi) return; // choosing hand — busy holding
           BOW_TIPS.forEach(function (tip) {
             var pt = h.pts[tip];
-            var seg = distToSeg(pt, stretchLine.a, stretchLine.b);
-            if (seg.d < touchD) { touchD = seg.d; touchPt = { x: seg.x, y: seg.y }; }
+            stretchLines.forEach(function (line) {
+              var seg = distToSeg(pt, line.a, line.b);
+              if (seg.d < touchD) { touchD = seg.d; touchPt = { x: seg.x, y: seg.y }; touchLine = line; }
+            });
           });
         });
-        if (touchPt && touchD < 18) {
+        if (touchPt && touchD < 18 && touchLine) {
+          activeLine = touchLine;
+          var p = stretchPitch(touchLine);
           if (!bowActive) {
             startBow(p.freq);
             labels.push({ x: touchPt.x, y: touchPt.y - 14, text: p.name, t0: now, kind: "pair" });
@@ -1024,14 +1073,41 @@
         } else if (bowActive) {
           stopBow();
         }
-        drawStretchLine(stretchLine.a, stretchLine.b, true, now);
+        stretchLines.forEach(function (line) {
+          var lp = linePitch(line);
+          drawStretchLine(line.a, line.b, true, now, lp.name);
+        });
+        if (activeLine && activeLine.noteName) { stretchNoteName = activeLine.noteName; noteReadout.textContent = activeLine.noteName; }
       }
       function clearStretchLine() {
         stopBow(); touchBowOn = false;
-        stretchLine = null; stretchHold = null; touchLine = null; touchDragEnd = null;
+        stretchLine = null; stretchLines = []; activeLine = null;
+        stretchHold = null; touchLine = null; touchDragEnd = null; touchDragLine = null;
         touchLineDrawing = false; stretchLenSmooth = 0; touchLenSmooth = 0;
         stretchNoteName = "—"; noteReadout.textContent = "—";
-        createStep = 0; createAnchorA = null;
+        createStep = 0; createAnchorA = null; createAppend = false;
+      }
+      /* Guitar · 6 strings: six parallel lines, standard tuning E A D G B E.
+         Left hand pinches an end to stretch a string and choose its note;
+         right hand touches a string to play it. Chords stay off here — the
+         six strings together ARE the chord when you play across them. */
+      function makeGuitar6() {
+        ensureAudio();
+        var sel = document.getElementById("selStrings");
+        if (sel.value !== "stretch") sel.value = "stretch";
+        document.getElementById("selSound").value = "guitar";
+        if (bowActive) stopBow();
+        clearStretchLine();
+        chordOn = false;
+        document.getElementById("tglChords").setAttribute("aria-pressed", "false");
+        GUITAR_TUNING.forEach(function (t, i) {
+          var y = H * (0.22 + i * 0.11);
+          var line = addStretchLine({ x: W * 0.12, y: y }, { x: W * 0.88, y: y }, t);
+          linePitch(line);
+        });
+        stretchLine = stretchLines[0]; activeLine = stretchLines[0];
+        stageHint.textContent = "Guitar — 6 strings E A D G B E · left hand: pinch an end to stretch a string · right hand: touch a string to play it";
+        if (touchOn && !cameraOn) stageHint.textContent = "Guitar — 6 strings E A D G B E · drag an end to stretch a string · touch and hold a string to play it";
       }
 
       function updateAndDrawStrings(now) {
@@ -1160,6 +1236,17 @@
         }
       }
       function drawTouchStretch(now) {
+        if (stretchLines.length > 0 || touchLine) {
+          statStrings.textContent = stretchLines.length + (touchLine && touchAddLine ? 1 : 0);
+          stretchLines.forEach(function (line) {
+            var lp = linePitch(line);
+            if (touchBowOn && activeLine === line) { touchBowFreq = lp.freq; updateBow(lp.freq); }
+            drawStretchLine(line.a, line.b, true, now, lp.name);
+          });
+          if (touchLine && touchAddLine) drawStretchLine(touchLine.a, touchLine.b, false, now);
+          if (activeLine && activeLine.noteName) { stretchNoteName = activeLine.noteName; noteReadout.textContent = activeLine.noteName; }
+          if (stretchLines.length > 0) return; // no locked lines yet: fall through to the single touch-line path below
+        }
         statStrings.textContent = touchLine ? 1 : 0;
         if (!touchLine) return;
         var len = distPt(touchLine.a, touchLine.b);
@@ -1220,6 +1307,26 @@
         if (touchOn) {
           if (document.getElementById("selStrings").value === "stretch") {
             var nowT = performance.now();
+            if (stretchLines.length > 0 && !touchAddLine) {
+              for (var gi = 0; gi < stretchLines.length; gi++) {
+                var gl = stretchLines[gi];
+                if (distPt(p, gl.a) < 48) { touchDragLine = gl; touchDragEnd = "a"; return; }
+                if (distPt(p, gl.b) < 48) { touchDragLine = gl; touchDragEnd = "b"; return; }
+              }
+              var bestLine = null, bestD2 = 1e9, bestPt = null;
+              stretchLines.forEach(function (line) {
+                var seg = distToSeg(p, line.a, line.b);
+                if (seg.d < bestD2) { bestD2 = seg.d; bestLine = line; bestPt = { x: seg.x, y: seg.y }; }
+              });
+              if (bestLine && bestD2 < 22) {
+                activeLine = bestLine;
+                var gp = linePitch(bestLine);
+                touchBowFreq = gp.freq; touchBowOn = true;
+                startBow(gp.freq);
+                return;
+              }
+              return; // empty space in multi-line mode: don't draw a new line over the others
+            }
             if (touchLine) {
               var nearA = distPt(p, touchLine.a) < 48, nearB = distPt(p, touchLine.b) < 48;
               if (nearA) { touchDragEnd = "a"; return; }
@@ -1258,7 +1365,8 @@
         var p = stagePos(e);
         var now = performance.now();
         if (document.getElementById("selStrings").value === "stretch") {
-          if (touchLine && touchDragEnd) touchLine[touchDragEnd] = { x: p.x, y: p.y };
+          if (touchDragLine && touchDragEnd) { touchDragLine[touchDragEnd] = { x: p.x, y: p.y }; }
+          else if (touchLine && touchDragEnd) touchLine[touchDragEnd] = { x: p.x, y: p.y };
           pointer.lastX = p.x; pointer.x = p.x; pointer.y = p.y;
           return;
         }
@@ -1272,7 +1380,15 @@
         }
         pointer.lastX = p.x; pointer.x = p.x; pointer.y = p.y;
       });
-      function pointerUp() { pointer.down = false; touchDragEnd = null; touchLineDrawing = false; if (touchBowOn) { touchBowOn = false; stopBow(); } }
+      function pointerUp() {
+        if (touchAddLine && touchLine && distPt(touchLine.a, touchLine.b) > 30) {
+          addStretchLine(touchLine.a, touchLine.b, null);
+          touchLine = null;
+        }
+        touchAddLine = false;
+        pointer.down = false; touchDragEnd = null; touchDragLine = null; touchLineDrawing = false;
+        if (touchBowOn) { touchBowOn = false; stopBow(); }
+      }
       stage.addEventListener("pointerup", pointerUp);
       stage.addEventListener("pointercancel", pointerUp);
       stage.addEventListener("pointerleave", pointerUp);
@@ -1439,6 +1555,22 @@
             : "Stretch a thread to change its pitch · flick a fingertip to pluck · tap a thread to play it";
         }
       });
+      document.getElementById("btnAddLine").addEventListener("click", function () {
+        ensureAudio();
+        if (stretchLines.length >= 6) { stageHint.textContent = "Already 6 lines — that is the most the screen holds"; return; }
+        var sel = document.getElementById("selStrings");
+        if (sel.value !== "stretch") sel.value = "stretch";
+        createAppend = true;
+        if (touchOn && !cameraOn) {
+          touchAddLine = true;
+          stageHint.textContent = "Drag on the stage to draw another line — your other lines stay";
+          return;
+        }
+        createStep = 1;
+        stageHint.textContent = "Adding line " + (stretchLines.length + 1) + " — Step 1 of 2: pinch thumb + index on ONE hand";
+        if (!cameraOn) stageHint.textContent = "Adding a line — start the camera, then pinch thumb + index on ONE hand";
+      });
+      document.getElementById("btnGuitar6").addEventListener("click", function () { makeGuitar6(); });
       document.getElementById("btnNewLine").addEventListener("click", function () {
         clearStretchLine();
         if (cameraOn) stageHint.textContent = "Show both hands — index fingertips set the line";
@@ -1449,6 +1581,7 @@
         // one tap switches to Stretch Line mode and starts the guided two-step creation
         var sel = document.getElementById("selStrings");
         if (sel.value !== "stretch") sel.value = "stretch";
+        createAppend = false;
         clearStretchLine();
         if (touchOn && !cameraOn) {
           stageHint.textContent = "Drag on the stage to draw your line · drag an end to stretch it · touch and hold it to play";
