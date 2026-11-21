@@ -267,7 +267,7 @@
               <h1>Air Harp <span class="thin">— strings of light, played with your hands</span></h1>
             </div>
           </div>
-          <p>Hold your hands up to the camera. Threads stretch between your fingertips — pull them longer for low notes, shorter for high ones, and flick to pluck.</p>
+          <p>Pick your instrument first — harp, guitar, banjo, ukulele, violin, soft synth or bell — then hold your hands up to the camera. Threads stretch between your fingertips — pull them longer for low notes, shorter for high ones, and flick to pluck. On the stretch line, Chords (on by default) plays a whole chord that moves as you stretch; turn Chords off for a single note.</p>
         </div>
         <div class="live-stats" id="liveStats">notes played <b id="statNotes">0</b> · strings <b id="statStrings">0</b></div>
       </div>
@@ -310,9 +310,13 @@
             <option value="minor">Minor pentatonic</option>
             <option value="glide">Glide (no steps)</option>
           </select>
-          <label for="selSound">Sound</label>
+          <label for="selSound">Instrument</label>
           <select id="selSound">
-            <option value="harp" selected>Plucked string</option>
+            <option value="harp" selected>Harp</option>
+            <option value="guitar">Guitar</option>
+            <option value="banjo">Banjo</option>
+            <option value="ukulele">Ukulele</option>
+            <option value="violin">Violin</option>
             <option value="soft">Soft synth</option>
             <option value="bell">Bell</option>
           </select>
@@ -323,6 +327,7 @@
           <button class="btn small" id="tglSkeleton" type="button" aria-pressed="true">Hand skeleton</button>
           <button class="btn small" id="tglSparks" type="button" aria-pressed="true">Sparks</button>
           <button class="btn small" id="tglReverb" type="button" aria-pressed="true">Reverb</button>
+          <button class="btn small" id="tglChords" type="button" aria-pressed="true" title="Stretch line plays a chord (root + third + fifth) instead of one note">Chords</button>
           <label for="rngVol">Volume</label>
           <input type="range" id="rngVol" min="0" max="100" value="80" />
         </div>
@@ -338,7 +343,7 @@
             <li><b>Stretch or shrink a thread</b> by moving your hands apart or together — longer is lower, shorter is higher, just like a real string.</li>
             <li><b>Flick a fingertip</b> quickly to pluck. The faster the flick, the louder the note, and sparks run along the thread.</li>
             <li>With <b>one hand</b>, threads fan out from your thumb to each fingertip instead — open and close your hand to change pitch, flick to play.</li>
-            <li><b>Stretch line (two hands).</b> Tap <b>Create a line</b> and follow the two steps on screen: <b>Step 1</b> — pinch thumb + index (the big finger) on ONE hand to set the first end; <b>Step 2</b> — pinch thumb + index on your OTHER hand to set the second end, and the line locks between them. Then <b>pinch one end and pull it</b> to stretch the line — the note glides smoothly like a violin, no steps (longer is lower, shorter is higher). <b>Touch the line with a fingertip of your other hand</b> to sound it while you stretch — hold it there to keep the note going, lift it to stop. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, touch and hold the line to play.</li>
+            <li><b>Stretch line (two hands).</b> First pick your <b>Instrument</b> above — harp, guitar, banjo, ukulele, violin, soft synth or bell — and leave <b>Chords</b> on if you want a chord, or turn it off for a single note. Then tap <b>Create a line</b> and follow the two steps on screen: <b>Step 1</b> — pinch thumb + index (the big finger) on ONE hand to set the first end; <b>Step 2</b> — pinch thumb + index on your OTHER hand to set the second end, and the line locks between them. Then <b>pinch one end and pull it</b> to stretch the line — the chord (or note) glides smoothly, no steps (longer is lower, shorter is higher). <b>Touch the line with a fingertip of your other hand</b> to sound it while you stretch — hold it there to keep it going, lift it to stop. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, touch and hold the line to play.</li>
             <li>No camera? The <b>touch harp</b> gives you ten strings on screen: press and drag across them, tap them, or use keys <span class="kbd">A</span>–<span class="kbd">;</span>.</li>
           </ol>
         </section>
@@ -346,7 +351,7 @@
           <h2>How it works</h2>
           <p><b>Tracking.</b> MediaPipe's hand landmarker runs in your browser and finds 21 joints per hand, dozens of times a second. The camera feed never leaves the page.</p>
           <p><b>Pitch.</b> Each thread's length is measured every frame and mapped onto the scale you picked — the same physics as a harp string, where length sets the note.</p>
-          <p><b>Sound.</b> A pluck is synthesized live with the Karplus-Strong algorithm, which models a vibrating string by feeding a burst of noise through a short feedback loop — no audio files involved.</p>
+          <p><b>Sound.</b> Every instrument is synthesized live — no audio files. Harp, guitar and banjo use the Karplus-Strong algorithm, which models a vibrating string by feeding a burst of noise through a short feedback loop; ukulele is a soft triangle voice, violin is a bowed sawtooth with vibrato, and bell and soft synth are layered sine voices. With <b>Chords</b> on, the stretch line plays a major triad (root + third + fifth) instead of one note.</p>
           <p><b>Tips.</b> Good light on your hands and a plain background track best. If the camera is blocked or unavailable, the touch harp still plays the full instrument.</p>
         </section>
       </div>
@@ -407,8 +412,9 @@
       var stretchHold = null;       // "a" | "b" | null — which end a pinched hand is dragging
       var createStep = 0;         // guided line creation: 0 = off, 1 = waiting for first pinch, 2 = waiting for other hand
       var createAnchorA = null;   // pinch point of the first hand
-      var bowOsc = null, bowGain = null, bowFilter = null, bowLfo = null;
+      var bowVoices = []; // [{osc, lfo, gain, filter, ratio}] — one voice per chord note
       var bowActive = false, bowFreq = 0, bowSparkT0 = 0;
+      var chordOn = true; // stretch line plays a chord by default; toggle it off for a single note
       var touchBowOn = false, touchBowFreq = 0;
       var touchLine = null;         // touch fallback: {a:{x,y}, b:{x,y}}
       var touchDragEnd = null;      // "a" | "b" | null
@@ -505,7 +511,58 @@
         var out = AC.createGain(); out.gain.value = velocity;
         out.connect(master);
         if (useReverb) out.connect(verb);
-        if (engine === "harp") {
+        if (engine === "guitar") {
+          // warm plucked string: Karplus-Strong + a soft fundamental
+          var srcG = AC.createBufferSource();
+          srcG.buffer = ksBuffer(freq);
+          var lpG = AC.createBiquadFilter();
+          lpG.type = "lowpass"; lpG.frequency.value = clamp(freq * 5, 700, 9000); lpG.Q.value = 0.4;
+          srcG.connect(lpG); lpG.connect(out);
+          srcG.start(t);
+          var oG = AC.createOscillator(); oG.type = "sine"; oG.frequency.value = freq;
+          var gG = AC.createGain();
+          gG.gain.setValueAtTime(0.22, t);
+          gG.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+          oG.connect(gG); gG.connect(out);
+          oG.start(t); oG.stop(t + 1.3);
+        } else if (engine === "banjo") {
+          // bright, short pluck: Karplus-Strong, bright filter, fast fade
+          var srcB = AC.createBufferSource();
+          srcB.buffer = ksBuffer(freq);
+          var lpB = AC.createBiquadFilter();
+          lpB.type = "lowpass"; lpB.frequency.value = clamp(freq * 9, 1200, 14000); lpB.Q.value = 0.6;
+          var envB = AC.createGain();
+          envB.gain.setValueAtTime(1, t);
+          envB.gain.exponentialRampToValueAtTime(0.0001, t + 0.65);
+          srcB.connect(lpB); lpB.connect(envB); envB.connect(out);
+          srcB.start(t);
+        } else if (engine === "ukulele") {
+          // mellow, soft and short: triangle + octave sine, quick fade
+          var gU = AC.createGain();
+          gU.gain.setValueAtTime(0.9, t);
+          gU.gain.exponentialRampToValueAtTime(0.0001, t + 1.0);
+          var oU1 = AC.createOscillator(); oU1.type = "triangle"; oU1.frequency.value = freq;
+          var oU2 = AC.createOscillator(); oU2.type = "sine"; oU2.frequency.value = freq * 2;
+          var gU2 = AC.createGain(); gU2.gain.value = 0.25;
+          var lpU = AC.createBiquadFilter(); lpU.type = "lowpass"; lpU.frequency.value = 2200;
+          oU1.connect(gU); oU2.connect(gU2); gU2.connect(gU); gU.connect(lpU); lpU.connect(out);
+          oU1.start(t); oU2.start(t); oU1.stop(t + 1.1); oU2.stop(t + 1.1);
+        } else if (engine === "violin") {
+          // sustained bowed note: sawtooth + lowpass + vibrato, gentle attack
+          var oV = AC.createOscillator(); oV.type = "sawtooth"; oV.frequency.value = freq;
+          var lpV = AC.createBiquadFilter(); lpV.type = "lowpass";
+          lpV.frequency.value = clamp(freq * 4, 400, 6000); lpV.Q.value = 0.8;
+          var gV = AC.createGain();
+          gV.gain.setValueAtTime(0.0001, t);
+          gV.gain.exponentialRampToValueAtTime(0.55, t + 0.12);
+          gV.gain.setValueAtTime(0.55, t + 1.1);
+          gV.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+          var lfoV = AC.createOscillator(); lfoV.type = "sine"; lfoV.frequency.value = 5.5;
+          var lfoGV = AC.createGain(); lfoGV.gain.value = freq * 0.006;
+          lfoV.connect(lfoGV); lfoGV.connect(oV.frequency);
+          oV.connect(lpV); lpV.connect(gV); gV.connect(out);
+          oV.start(t); lfoV.start(t); oV.stop(t + 1.7); lfoV.stop(t + 1.7);
+        } else if (engine === "harp") {
           var src = AC.createBufferSource();
           src.buffer = ksBuffer(freq);
           var lp = AC.createBiquadFilter();
@@ -538,50 +595,73 @@
         lastNoteName = name;
         noteReadout.textContent = name;
       }
-      /* Violin-like bow voice for the stretch line: a sustained sawtooth
-         through a lowpass, with a gentle vibrato. It sounds only while a
-         fingertip of the free hand touches the line, and its pitch glides
-         smoothly with the line's length — no steps, like a violin. */
+      /* Chords + instruments for the stretch line.
+         When Chords is on, the line sounds a major triad — root + major
+         third + fifth — and stretching moves the whole chord, root first.
+         When Chords is off, it is a single note again. The bow voice follows
+         the instrument you picked before playing: violin = sawtooth,
+         bell = sine, everything else = warm triangle. */
+      function chordFreqs(freq) {
+        if (!chordOn) return [freq];
+        return [freq, freq * Math.pow(2, 4 / 12), freq * Math.pow(2, 7 / 12)];
+      }
+      function chordRootName(mf) {
+        return midiName(mf) + (chordOn ? " maj" : " ~");
+      }
+      function bowOscType() {
+        var e = document.getElementById("selSound").value;
+        if (e === "violin") return "sawtooth";
+        if (e === "bell") return "sine";
+        return "triangle";
+      }
       function startBow(freq) {
         ensureAudio();
         if (!AC) return;
         if (bowActive) { updateBow(freq); return; }
-        bowOsc = AC.createOscillator();
-        bowOsc.type = "sawtooth";
-        bowOsc.frequency.value = freq;
-        bowFilter = AC.createBiquadFilter();
-        bowFilter.type = "lowpass";
-        bowFilter.frequency.value = clamp(freq * 4, 400, 6000);
-        bowFilter.Q.value = 0.8;
-        bowGain = AC.createGain();
+        var type = bowOscType();
         var t = AC.currentTime;
-        bowGain.gain.setValueAtTime(0.0001, t);
-        bowGain.gain.exponentialRampToValueAtTime(0.4, t + 0.09);
-        bowOsc.connect(bowFilter); bowFilter.connect(bowGain);
-        bowGain.connect(master);
-        if (useReverb) bowGain.connect(verb);
-        // gentle vibrato, like a violin hand
-        bowLfo = AC.createOscillator();
-        bowLfo.type = "sine"; bowLfo.frequency.value = 5.5;
-        var lfoGain = AC.createGain();
-        lfoGain.gain.value = freq * 0.006;
-        bowLfo.connect(lfoGain); lfoGain.connect(bowOsc.frequency);
-        bowOsc.start(t); bowLfo.start(t);
+        var freqs = chordFreqs(freq);
+        var perVoice = freqs.length > 1 ? 0.22 : 0.4;
+        freqs.forEach(function (f) {
+          var osc = AC.createOscillator();
+          osc.type = type;
+          osc.frequency.value = f;
+          var filter = AC.createBiquadFilter();
+          filter.type = "lowpass";
+          filter.frequency.value = clamp(f * 4, 400, 6000);
+          filter.Q.value = 0.8;
+          var gain = AC.createGain();
+          gain.gain.setValueAtTime(0.0001, t);
+          gain.gain.exponentialRampToValueAtTime(perVoice, t + 0.09);
+          osc.connect(filter); filter.connect(gain);
+          gain.connect(master);
+          if (useReverb) gain.connect(verb);
+          var lfo = AC.createOscillator();
+          lfo.type = "sine"; lfo.frequency.value = 5.5;
+          var lfoGain = AC.createGain();
+          lfoGain.gain.value = f * 0.006;
+          lfo.connect(lfoGain); lfoGain.connect(osc.frequency);
+          osc.start(t); lfo.start(t);
+          bowVoices.push({ osc: osc, lfo: lfo, gain: gain, filter: filter, ratio: f / freq });
+        });
         bowActive = true; bowFreq = freq;
       }
       function updateBow(freq) {
         if (!AC || !bowActive) return;
         bowFreq = freq;
-        bowOsc.frequency.setTargetAtTime(freq, AC.currentTime, 0.03);
-        bowFilter.frequency.setTargetAtTime(clamp(freq * 4, 400, 6000), AC.currentTime, 0.03);
+        bowVoices.forEach(function (v) {
+          v.osc.frequency.setTargetAtTime(freq * v.ratio, AC.currentTime, 0.03);
+          v.filter.frequency.setTargetAtTime(clamp(freq * v.ratio * 4, 400, 6000), AC.currentTime, 0.03);
+        });
       }
       function stopBow() {
-        if (!AC || !bowActive) { bowActive = false; return; }
+        if (!AC || !bowActive) { bowActive = false; bowVoices = []; return; }
         var t = AC.currentTime;
-        var osc = bowOsc, lfo = bowLfo;
-        bowGain.gain.setTargetAtTime(0.0001, t, 0.05);
-        try { osc.stop(t + 0.4); lfo.stop(t + 0.4); } catch (e) {}
-        bowOsc = null; bowGain = null; bowFilter = null; bowLfo = null;
+        bowVoices.forEach(function (v) {
+          v.gain.gain.setTargetAtTime(0.0001, t, 0.05);
+          try { v.osc.stop(t + 0.4); v.lfo.stop(t + 0.4); } catch (e) {}
+        });
+        bowVoices = [];
         bowActive = false; bowFreq = 0;
       }
 
@@ -765,8 +845,8 @@
         var len = distPt(stretchLine.a, stretchLine.b);
         stretchLenSmooth = stretchLenSmooth ? stretchLenSmooth * 0.82 + len * 0.18 : len;
         var lenNorm = clamp(stretchLenSmooth / (W * 0.82), 0, 1);
-        var mf = 84 - lenNorm * 33; // continuous glide, C6 down to C3 — no steps, like a violin
-        var p = { freq: midiToFreq(mf), name: midiName(mf) + " ~" };
+        var mf = 84 - lenNorm * 33; // continuous glide, C6 down to C3 — no steps
+        var p = { freq: midiToFreq(mf), name: chordRootName(mf) };
         if (p.name !== stretchNoteName) { stretchNoteName = p.name; noteReadout.textContent = p.name; }
         return p;
       }
@@ -1085,8 +1165,8 @@
         var len = distPt(touchLine.a, touchLine.b);
         touchLenSmooth = touchLenSmooth ? touchLenSmooth * 0.85 + len * 0.15 : len;
         var lenNorm = clamp(touchLenSmooth / (W * 0.82), 0, 1);
-        var mf = 84 - lenNorm * 33; // continuous glide — no steps, like a violin
-        var p = { freq: midiToFreq(mf), name: midiName(mf) + " ~" };
+        var mf = 84 - lenNorm * 33; // continuous glide — no steps
+        var p = { freq: midiToFreq(mf), name: chordRootName(mf) };
         touchBowFreq = p.freq;
         if (touchBowOn) updateBow(p.freq);
         if (p.name !== stretchNoteName) { stretchNoteName = p.name; noteReadout.textContent = p.name; }
@@ -1330,6 +1410,15 @@
       }
       wireToggle("tglSkeleton", function (on) { showSkeleton = on; });
       wireToggle("tglSparks", function (on) { showSparks = on; });
+      wireToggle("tglChords", function (on) {
+        chordOn = on;
+        if (bowActive) stopBow();
+      });
+      document.getElementById("selSound").addEventListener("change", function () {
+        // pick your instrument before you play — changing it stops any note already sounding
+        if (bowActive) stopBow();
+        ksCache = {};
+      });
       wireToggle("tglReverb", function (on) {
         useReverb = on;
         if (verbGain) verbGain.gain.setTargetAtTime(on ? 0.33 : 0, AC.currentTime, 0.05);
