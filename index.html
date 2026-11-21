@@ -829,12 +829,21 @@
         ctx.fillStyle = "rgba(233,180,76,0.95)"; ctx.fillRect(W / 2 - 60, 14, 120 * mouthOpen, 6);
         ctx.restore();
       }
+      /* Mouth pitch, in the SAME scale the hands play in — the scale picked
+         in the Scale menu (pentatonic, major, minor, or glide), whatever
+         Harmony is set to. Not the hand's note: the mouth keeps its own
+         pitch from how wide it opens, it just never leaves the scale. */
+      function mouthMidi(mf) {
+        var scaleName = document.getElementById("selScale").value;
+        if (scaleName === "glide") return mf; // glide: continuous, like the hands in glide mode
+        return snapMidi(mf); // pentatonic / major / minor: nearest note of the selected scale
+      }
       function updateMouth() {
         if (!mouthOn || !cameraOn) { if (mouthVoice) stopMouthVoice(); mouthOpen = 0; return; }
         mouthOpen = mouthOpen * 0.65 + mouthOpennessRaw() * 0.35;
         if (mouthOpen > 0.14) {
           var mf = 60 + mouthOpen * 24; // C4 up two octaves as the mouth opens wider
-          var midi = harmonyOn ? snapMidi(mf) : Math.round(mf);
+          var midi = mouthMidi(mf); // same scale as the hands — pentatonic, major, minor, or glide
           var freq = midiToFreq(midi);
           if (!mouthVoice) startMouthVoice();
           if (mouthVoice) {
@@ -843,7 +852,7 @@
             mouthVoice.out.gain.setTargetAtTime(0.10 + mouthOpen * 0.55, AC.currentTime, 0.05);
             if (midi !== mouthVoice.midi) {
               mouthVoice.midi = midi;
-              noteReadout.textContent = midiName(midi) + " · mouth";
+              noteReadout.textContent = midiName(midi) + (document.getElementById("selScale").value === "glide" ? " ~" : "") + " · mouth";
             }
           }
         } else if (mouthOpen < 0.07 && mouthVoice) {
