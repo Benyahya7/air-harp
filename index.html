@@ -316,6 +316,7 @@
             <option value="soft">Soft synth</option>
             <option value="bell">Bell</option>
           </select>
+          <button class="btn primary small" id="btnCreateLine" type="button" title="Start making a line, step by step">Create a line</button>
           <button class="btn small" id="btnNewLine" type="button" title="Clear the locked line and make a new one">New line</button>
         </div>
         <div class="ctl-group grow">
@@ -337,7 +338,7 @@
             <li><b>Stretch or shrink a thread</b> by moving your hands apart or together — longer is lower, shorter is higher, just like a real string.</li>
             <li><b>Flick a fingertip</b> quickly to pluck. The faster the flick, the louder the note, and sparks run along the thread.</li>
             <li>With <b>one hand</b>, threads fan out from your thumb to each fingertip instead — open and close your hand to change pitch, flick to play.</li>
-            <li><b>Stretch line (two hands).</b> Hold both index fingertips up — a preview line appears between them. <b>Pinch thumb + index on both hands</b> to lock the line in place. Then <b>pinch one end and pull it</b> to stretch the line and change its note. <b>Flick a fingertip across the line</b> to play it — it only sounds when you hit it, so it stays quiet while you stretch. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, tap the line to play.</li>
+            <li><b>Stretch line (two hands).</b> Tap <b>Create a line</b> and follow the two steps on screen: <b>Step 1</b> — pinch thumb + index (the big finger) on ONE hand to set the first end; <b>Step 2</b> — pinch thumb + index on your OTHER hand to set the second end, and the line locks between them. Then <b>pinch one end and pull it</b> to stretch the line and change its note (longer is lower, shorter is higher). <b>Flick a fingertip across the line</b> to play it — it only sounds when you hit it, so it stays quiet while you stretch. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, tap the line to play.</li>
             <li>No camera? The <b>touch harp</b> gives you ten strings on screen: press and drag across them, tap them, or use keys <span class="kbd">A</span>–<span class="kbd">;</span>.</li>
           </ol>
         </section>
@@ -404,6 +405,8 @@
       var stretchLenSmooth = 0;     // smoothed length, kills camera jitter
       var stretchNoteName = "—";
       var stretchHold = null;       // "a" | "b" | null — which end a pinched hand is dragging
+      var createStep = 0;         // guided line creation: 0 = off, 1 = waiting for first pinch, 2 = waiting for other hand
+      var createAnchorA = null;   // pinch point of the first hand
       var stretchStrumPrev = {};    // finger id -> {d, t} distance to the line, for crossing detection
       var stretchLastPlay = 0;
       var touchLine = null;         // touch fallback: {a:{x,y}, b:{x,y}}
@@ -708,7 +711,7 @@
         var cx = a.x + dx * t, cy = a.y + dy * t;
         return { d: Math.hypot(p.x - cx, p.y - cy), t: t, x: cx, y: cy };
       }
-      function isPinch(pts) { return distPt(pts[4], pts[8]) < W * 0.055; }
+      function isPinch(pts) { return distPt(pts[4], pts[8]) < W * 0.07; }
       function pinchPoint(pts) { return { x: (pts[4].x + pts[8].x) / 2, y: (pts[4].y + pts[8].y) / 2 }; }
       function stretchPitch() {
         if (!stretchLine) return null;
@@ -765,9 +768,53 @@
           ctx.restore();
         }
       }
+      /* Guided line creation, started by the "Create a line" button:
+         one pinch at a time — first hand sets one end, other hand sets the other.
+         Hands are told apart by where they pinch, not by their order in the
+         tracking list, so it still works if the camera swaps the hands around. */
+      function drawAnchorMarker(p) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.fillStyle = "rgba(255,244,214,0.95)";
+        ctx.shadowColor = "rgba(255,217,122,0.9)"; ctx.shadowBlur = 12;
+        ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+      function updateCreateLine(hs, now) {
+        statStrings.textContent = 0;
+        if (createStep === 1) {
+          stageHint.textContent = "Step 1 of 2 — pinch thumb + index on ONE hand";
+          for (var hi = 0; hi < hs.length; hi++) {
+            if (isPinch(hs[hi].pts)) {
+              createAnchorA = pinchPoint(hs[hi].pts);
+              createStep = 2;
+              break;
+            }
+          }
+          if (createAnchorA) drawAnchorMarker(createAnchorA);
+          return;
+        }
+        stageHint.textContent = "Step 2 of 2 — now pinch thumb + index on your OTHER hand";
+        if (createAnchorA) {
+          drawAnchorMarker(createAnchorA);
+          for (var hj = 0; hj < hs.length; hj++) {
+            if (!isPinch(hs[hj].pts)) continue;
+            var pp = pinchPoint(hs[hj].pts);
+            if (distPt(pp, createAnchorA) < W * 0.12) continue; // same hand as step 1 — wait for the other one
+            drawStretchLine(createAnchorA, pp, false, now); // preview while the second hand pinches
+            stretchLine = { a: { x: createAnchorA.x, y: createAnchorA.y }, b: { x: pp.x, y: pp.y } };
+            stretchLenSmooth = distPt(createAnchorA, pp);
+            stretchPitch();
+            createStep = 0; createAnchorA = null;
+            stageHint.textContent = "Line locked — pinch an end to stretch it, flick across it to play";
+            return;
+          }
+        }
+      }
       function updateStretchLine(now) {
         var hs = latestHands.map(function (h) { return { pts: handPx(h) }; });
         statStrings.textContent = stretchLine ? 1 : 0;
+        if (createStep > 0 && !stretchLine) { updateCreateLine(hs, now); return; }
         if (!stretchLine) {
           if (hs.length === 2) {
             var sorted = hs.slice().sort(function (x, y) { return x.pts[0].x - y.pts[0].x; });
@@ -797,7 +844,7 @@
           }
           if (!isPinch(h.pts)) return;
           ["a", "b"].forEach(function (end) {
-            if (distPt(pp, stretchLine[end]) < W * 0.10) {
+            if (distPt(pp, stretchLine[end]) < W * 0.12) {
               stretchHold = { end: end, hand: hi };
               stretchLine[end] = { x: pp.x, y: pp.y };
               held = true;
@@ -841,6 +888,7 @@
         stretchLine = null; stretchHold = null; touchLine = null; touchDragEnd = null;
         touchLineDrawing = false; stretchLenSmooth = 0; touchLenSmooth = 0;
         stretchNoteName = "—"; noteReadout.textContent = "—";
+        createStep = 0; createAnchorA = null;
       }
 
       function updateAndDrawStrings(now) {
@@ -1238,6 +1286,20 @@
         clearStretchLine();
         if (cameraOn) stageHint.textContent = "Show both hands — index fingertips set the line";
         else if (touchOn) stageHint.textContent = "Drag on the stage to draw a line · drag an end to stretch it · tap the line to play";
+      });
+      document.getElementById("btnCreateLine").addEventListener("click", function () {
+        ensureAudio();
+        // one tap switches to Stretch Line mode and starts the guided two-step creation
+        var sel = document.getElementById("selStrings");
+        if (sel.value !== "stretch") sel.value = "stretch";
+        clearStretchLine();
+        if (touchOn && !cameraOn) {
+          stageHint.textContent = "Drag on the stage to draw your line · drag an end to stretch it · tap it to play";
+          return;
+        }
+        createStep = 1;
+        stageHint.textContent = "Step 1 of 2 — pinch thumb + index on ONE hand";
+        if (!cameraOn) stageHint.textContent = "Step 1 of 2 — start the camera, then pinch thumb + index on ONE hand";
       });
     </script>
   </body>
