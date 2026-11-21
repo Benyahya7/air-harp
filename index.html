@@ -348,7 +348,7 @@
             <li><b>Flick a fingertip</b> quickly to pluck. The faster the flick, the louder the note, and sparks run along the thread.</li>
             <li>With <b>one hand</b>, threads fan out from your thumb to each fingertip instead — open and close your hand to change pitch, flick to play.</li>
             <li><b>Harmony (on by default).</b> Every note snaps to the scale you picked, so one hand or two hands can never play out of key. When Chords is on, all your lines share ONE chord — the line you are playing sets the root, the other lines play its third, fifth and octave. Plucks also land on a gentle beat grid, so fingers that arrive a moment apart still sound together. Turn Harmony off if you want the free glide back.</li>
-            <li><b>Mouth.</b> Turn <b>Mouth</b> on, start the camera and open your mouth — it sings a vocal "ahh" <b>in harmony with your hand</b>: while you bow a line it sings the chord of that line (root, third, fifth, octave), wider mouth = higher chord note; with no hand playing it sings in your chosen scale. Close it and the voice stops. Your lips are outlined in gold, with a meter at the top showing how open your mouth is.</li>
+            <li><b>Mouth.</b> Turn <b>Mouth</b> on, start the camera and open your mouth — it sings a vocal "ahh". The wider you open it, the higher the note (two octaves, C4 up) and the louder it gets; close it and the voice stops. With Harmony on it stays in key. Your lips are outlined in gold, with a meter at the top showing how open your mouth is.</li>
             <li><b>Several lines at once.</b> Tap <b>Add a line</b> after locking one line and make another — up to 6 lines on screen, each its own string with its own chord. <b>Left hand chooses, right hand plays:</b> pinch an end of a line with one hand to stretch it and choose its chord, touch a line with your other hand to play it — at the same time. Tap <b>New line</b> to clear them all and start over.</li>
             <li><b>Stretch line (two hands).</b> First pick your <b>Instrument</b> above — harp, guitar, banjo, ukulele, violin, soft synth or bell — and leave <b>Chords</b> on if you want a chord, or turn it off for a single note. Then tap <b>Create a line</b> and follow the two steps on screen: <b>Step 1</b> — pinch thumb + index (the big finger) on ONE hand to set the first end; <b>Step 2</b> — pinch thumb + index on your OTHER hand to set the second end, and the line locks between them. Then <b>pinch one end and pull it</b> to stretch the line — the chord (or note) glides smoothly, no steps (longer is lower, shorter is higher). <b>Touch the line with a fingertip of your other hand</b> to sound it while you stretch — hold it there to keep it going, lift it to stop. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, touch and hold the line to play.</li>
             <li>No camera? The <b>touch harp</b> gives you ten strings on screen: press and drag across them, tap them, or use keys <span class="kbd">A</span>–<span class="kbd">;</span>.</li>
@@ -829,53 +829,16 @@
         ctx.fillStyle = "rgba(233,180,76,0.95)"; ctx.fillRect(W / 2 - 60, 14, 120 * mouthOpen, 6);
         ctx.restore();
       }
-      /* Mouth pitch — in HARMONY with the hand, not on its own.
-         The old version gave the mouth its own pitch (C4 + how wide it
-         opens), snapped only to the chosen scale. Against a hand chord like
-         E major that could sing C or D and clash — same scale, wrong chord.
-         Now: when a hand is playing, the mouth sings a tone OF THAT HAND'S
-         CHORD — the major triad (root / third / fifth / octave) of the chord
-         the hand is bowing or just plucked. Wider mouth = higher chord tone,
-         so it can never leave the hand's harmony. No hand playing yet: it
-         falls back to the chosen scale, as before. */
-      function handChordRoot() {
-        // the note the hand is playing right now, as a MIDI number
-        if (bowActive && (bowFreqSmooth || bowFreq)) return Math.round(freqToMidi(bowFreqSmooth || bowFreq));
-        if (sharedRootMidi != null) return sharedRootMidi;
-        return null;
-      }
-      function mouthMidi(mf, open01) {
-        var scaleName = document.getElementById("selScale").value;
-        var root = handChordRoot();
-        if (root != null && scaleName !== "glide") {
-          // bring the hand's root into singing range (C4..B4), then walk
-          // up its major triad as the mouth opens wider
-          var base = root;
-          while (base < 60) base += 12;
-          while (base > 71) base -= 12;
-          if (!chordOn) {
-            // single-note mode: sing the hand's own note, an octave up when
-            // the mouth opens wide (the glide in updateMouth slides it up)
-            return base + ((open01 || 0) > 0.7 ? 12 : 0);
-          }
-          var target = base + (open01 || 0) * 12; // one octave of chord tones
-          var tones = [0, 4, 7, 12, 16, 19, 24]; // root 3rd 5th 8ve 10th 12th 15th
-          var best = tones[0], bestD = 1e9;
-          for (var i = 0; i < tones.length; i++) {
-            var d = Math.abs((base + tones[i]) - target);
-            if (d < bestD) { bestD = d; best = tones[i]; }
-          }
-          return base + best;
-        }
-        if (scaleName === "glide") return mf; // glide: continuous, like the hands in glide mode
-        return snapMidi(mf); // no hand playing yet: nearest note of the selected scale
-      }
+      /* Mouth pitch — the FIRST model: the mouth keeps its own pitch,
+         C4 up two octaves as it opens wider. It snaps to the chosen scale
+         only while Harmony is on; with Harmony off it sings every note
+         (chromatic), free of the hand's chord. */
       function updateMouth() {
         if (!mouthOn || !cameraOn) { if (mouthVoice) stopMouthVoice(); mouthOpen = 0; return; }
         mouthOpen = mouthOpen * 0.65 + mouthOpennessRaw() * 0.35;
         if (mouthOpen > 0.14) {
-          var mf = 60 + mouthOpen * 24; // fallback pitch when no hand is playing
-          var midi = mouthMidi(mf, mouthOpen); // in the hand's chord when a hand plays
+          var mf = 60 + mouthOpen * 24; // C4 up two octaves as the mouth opens wider
+          var midi = harmonyOn ? snapMidi(mf) : Math.round(mf);
           var freq = midiToFreq(midi);
           if (!mouthVoice) startMouthVoice();
           if (mouthVoice) {
@@ -884,8 +847,7 @@
             mouthVoice.out.gain.setTargetAtTime(0.10 + mouthOpen * 0.55, AC.currentTime, 0.05);
             if (midi !== mouthVoice.midi) {
               mouthVoice.midi = midi;
-              var hRoot = handChordRoot();
-              noteReadout.textContent = midiName(midi) + (document.getElementById("selScale").value === "glide" ? " ~" : "") + " · mouth" + (hRoot != null ? " + " + midiName(hRoot) + " maj" : "");
+              noteReadout.textContent = midiName(midi) + " · mouth";
             }
           }
         } else if (mouthOpen < 0.07 && mouthVoice) {
@@ -999,7 +961,7 @@
       function pluckString(s, st, velocity, now) {
         var len = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
         var p = pitchFromLength(len);
-        // Harp mode: the last plucked string sets the chord the mouth harmonises with.
+        // Harp mode: the last plucked string sets the shared chord root the other lines harmonise with.
         if (harmonyOn) sharedRootMidi = Math.round(freqToMidi(p.freq));
         playNote(p.freq, p.name, velocity);
         st.vibT0 = now; st.vibAmp = 5 + velocity * 13; st.vibFreq = clamp(p.freq / 26, 7, 26);
