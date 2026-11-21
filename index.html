@@ -301,6 +301,7 @@
             <option value="auto" selected>Auto</option>
             <option value="pairs">Between both hands</option>
             <option value="fan">Thumb fan (one hand)</option>
+            <option value="stretch">Stretch line (two hands)</option>
           </select>
           <label for="selScale">Scale</label>
           <select id="selScale">
@@ -315,6 +316,7 @@
             <option value="soft">Soft synth</option>
             <option value="bell">Bell</option>
           </select>
+          <button class="btn small" id="btnNewLine" type="button" title="Clear the locked line and make a new one">New line</button>
         </div>
         <div class="ctl-group grow">
           <button class="btn small" id="tglSkeleton" type="button" aria-pressed="true">Hand skeleton</button>
@@ -335,6 +337,7 @@
             <li><b>Stretch or shrink a thread</b> by moving your hands apart or together — longer is lower, shorter is higher, just like a real string.</li>
             <li><b>Flick a fingertip</b> quickly to pluck. The faster the flick, the louder the note, and sparks run along the thread.</li>
             <li>With <b>one hand</b>, threads fan out from your thumb to each fingertip instead — open and close your hand to change pitch, flick to play.</li>
+            <li><b>Stretch line (two hands).</b> Hold both index fingertips up — a preview line appears between them. <b>Pinch thumb + index on both hands</b> to lock the line in place. Then <b>pinch one end and pull it</b> to stretch the line and change its note. <b>Flick a fingertip across the line</b> to play it — it only sounds when you hit it, so it stays quiet while you stretch. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, tap the line to play.</li>
             <li>No camera? The <b>touch harp</b> gives you ten strings on screen: press and drag across them, tap them, or use keys <span class="kbd">A</span>–<span class="kbd">;</span>.</li>
           </ol>
         </section>
@@ -394,6 +397,18 @@
       var notesPlayed = 0;
       var lastNoteName = "—";
       var showSkeleton = true, showSparks = true, useReverb = true;
+
+      /* Stretch Line mode: one line locked in space, stretched by hand, played by strumming.
+         Deliberately quiet: nothing plays while you move or stretch — only a flick across the line sounds. */
+      var stretchLine = null;       // {a:{x,y}, b:{x,y}} once locked
+      var stretchLenSmooth = 0;     // smoothed length, kills camera jitter
+      var stretchNoteName = "—";
+      var stretchHold = null;       // "a" | "b" | null — which end a pinched hand is dragging
+      var stretchStrumPrev = {};    // finger id -> {d, t} distance to the line, for crossing detection
+      var stretchLastPlay = 0;
+      var touchLine = null;         // touch fallback: {a:{x,y}, b:{x,y}}
+      var touchDragEnd = null;      // "a" | "b" | null
+      var touchLineDrawing = false;
 
       var NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
       var SCALES = {
@@ -624,6 +639,7 @@
         cameraOn = false;
         latestHands = [];
         stringState = {};
+        clearStretchLine();
         document.getElementById("btnCamera").textContent = "Start camera";
         document.getElementById("ctaCamera").textContent = "Start camera";
         setStatus(touchOn ? "Touch harp" : "Camera off", touchOn ? "on" : "");
@@ -681,7 +697,154 @@
         }
       }
 
+      /* ---------------- stretch line ---------------- */
+      var stretchVib = { vibT0: -1e9, vibAmp: 0, vibFreq: 10, lastPluck: 0 };
+      var touchLenSmooth = 0;
+      function distPt(p, q) { return Math.hypot(p.x - q.x, p.y - q.y); }
+      function distToSeg(p, a, b) {
+        var dx = b.x - a.x, dy = b.y - a.y;
+        var l2 = dx * dx + dy * dy;
+        var t = l2 ? clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / l2, 0, 1) : 0;
+        var cx = a.x + dx * t, cy = a.y + dy * t;
+        return { d: Math.hypot(p.x - cx, p.y - cy), t: t, x: cx, y: cy };
+      }
+      function isPinch(pts) { return distPt(pts[4], pts[8]) < W * 0.055; }
+      function pinchPoint(pts) { return { x: (pts[4].x + pts[8].x) / 2, y: (pts[4].y + pts[8].y) / 2 }; }
+      function stretchPitch() {
+        if (!stretchLine) return null;
+        var len = distPt(stretchLine.a, stretchLine.b);
+        stretchLenSmooth = stretchLenSmooth ? stretchLenSmooth * 0.82 + len * 0.18 : len;
+        var p = pitchFromLength(stretchLenSmooth);
+        if (p.name !== stretchNoteName) { stretchNoteName = p.name; noteReadout.textContent = p.name; }
+        return p;
+      }
+      function drawStretchLine(a, b, locked, now) {
+        var age = now - stretchVib.vibT0;
+        var amp = locked && age < 900 ? stretchVib.vibAmp * Math.exp(-age / 260) : 0;
+        var phase = (now / 1000) * stretchVib.vibFreq * Math.PI * 2;
+        var dx = b.x - a.x, dy = b.y - a.y;
+        var len = Math.max(1, Math.hypot(dx, dy));
+        var px = -dy / len, py = dx / len;
+        ctx.save();
+        ctx.lineCap = "round";
+        if (!locked) ctx.setLineDash([10, 8]);
+        ctx.beginPath();
+        var SEG = 22;
+        for (var i = 0; i <= SEG; i++) {
+          var t = i / SEG;
+          var off = amp * Math.sin(Math.PI * t) * Math.sin(phase);
+          var x = a.x + dx * t + px * off, y = a.y + dy * t + py * off;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = locked ? "rgba(255, 217, 122, 0.30)" : "rgba(255, 217, 122, 0.18)";
+        ctx.lineWidth = 7;
+        ctx.shadowColor = "rgba(255, 217, 122, 0.9)";
+        ctx.shadowBlur = 16;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = locked ? "rgba(255, 217, 122, 0.95)" : "rgba(255, 217, 122, 0.6)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+        [a, b].forEach(function (p) {
+          ctx.beginPath();
+          ctx.fillStyle = locked ? "rgba(255,244,214,0.95)" : "rgba(255,244,214,0.6)";
+          ctx.shadowColor = "rgba(255,217,122,0.9)"; ctx.shadowBlur = 10;
+          ctx.arc(p.x, p.y, locked ? 6 : 4.5, 0, Math.PI * 2); ctx.fill();
+          ctx.shadowBlur = 0;
+        });
+        if (locked) {
+          var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+          ctx.save();
+          ctx.fillStyle = "#ffe9ad";
+          ctx.font = "700 17px 'IBM Plex Mono', monospace";
+          ctx.textAlign = "center";
+          ctx.shadowColor = "rgba(0,0,0,0.8)"; ctx.shadowBlur = 6;
+          ctx.fillText(stretchNoteName, mx, my - 16);
+          ctx.restore();
+        }
+      }
+      function updateStretchLine(now) {
+        var hs = latestHands.map(function (h) { return { pts: handPx(h) }; });
+        statStrings.textContent = stretchLine ? 1 : 0;
+        if (!stretchLine) {
+          if (hs.length === 2) {
+            var sorted = hs.slice().sort(function (x, y) { return x.pts[0].x - y.pts[0].x; });
+            var a = sorted[0].pts[8], b = sorted[1].pts[8];
+            drawStretchLine(a, b, false, now);
+            if (isPinch(sorted[0].pts) && isPinch(sorted[1].pts)) {
+              stretchLine = { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } };
+              stretchLenSmooth = distPt(a, b);
+              stretchPitch();
+              stageHint.textContent = "Line locked — pinch an end to stretch it, flick across it to play";
+            } else {
+              stageHint.textContent = "Pinch thumb + index on both hands to lock the line";
+            }
+          } else {
+            stageHint.textContent = "Show both hands — index fingertips set the line";
+          }
+          return;
+        }
+        /* locked: pinch an end and drag it to stretch */
+        var held = false;
+        hs.forEach(function (h, hi) {
+          var pp = pinchPoint(h.pts);
+          if (stretchHold && stretchHold.hand === hi) {
+            if (isPinch(h.pts)) { stretchLine[stretchHold.end] = { x: pp.x, y: pp.y }; held = true; }
+            else stretchHold = null;
+            return;
+          }
+          if (!isPinch(h.pts)) return;
+          ["a", "b"].forEach(function (end) {
+            if (distPt(pp, stretchLine[end]) < W * 0.10) {
+              stretchHold = { end: end, hand: hi };
+              stretchLine[end] = { x: pp.x, y: pp.y };
+              held = true;
+            }
+          });
+        });
+        if (!held && stretchHold) {
+          /* keep holding if the same hand is still pinching but moved away from the end */
+          var hh = hs[stretchHold.hand];
+          if (hh && isPinch(hh.pts)) {
+            var pp2 = pinchPoint(hh.pts);
+            stretchLine[stretchHold.end] = { x: pp2.x, y: pp2.y };
+            held = true;
+          } else stretchHold = null;
+        }
+        var p = stretchPitch();
+        /* strum: a fingertip crossing the line plays it — nothing else makes a sound */
+        var STRUM_TIPS = [8, 12, 16, 20];
+        hs.forEach(function (h, hi) {
+          STRUM_TIPS.forEach(function (tip) {
+            if (stretchHold && stretchHold.hand === hi && tip === 8) return; // holding hand's index is busy
+            var pt = h.pts[tip];
+            var seg = distToSeg(pt, stretchLine.a, stretchLine.b);
+            var id = hi + "-" + tip;
+            var prev = stretchStrumPrev[id];
+            if (prev) {
+              var dt = Math.max(1, now - prev.t) / 1000;
+              var speed = Math.hypot(pt.x - prev.x, pt.y - prev.y) / dt;
+              if (prev.d > 20 && seg.d < 12 && speed > W * 0.15 && now - stretchLastPlay > 280) {
+                stretchLastPlay = now;
+                var s = { a: stretchLine.a, b: stretchLine.b, kind: "pair", id: "stretch" };
+                pluckString(s, stretchVib, clamp(speed / (W * 1.6) + 0.35, 0.25, 1), now);
+              }
+            }
+            stretchStrumPrev[id] = { d: seg.d, t: now, x: pt.x, y: pt.y };
+          });
+        });
+        drawStretchLine(stretchLine.a, stretchLine.b, true, now);
+      }
+      function clearStretchLine() {
+        stretchLine = null; stretchHold = null; touchLine = null; touchDragEnd = null;
+        touchLineDrawing = false; stretchLenSmooth = 0; touchLenSmooth = 0;
+        stretchNoteName = "—"; noteReadout.textContent = "—";
+      }
+
       function updateAndDrawStrings(now) {
+        if (document.getElementById("selStrings").value === "stretch") { updateStretchLine(now); return []; }
         var strings = buildStrings();
         statStrings.textContent = strings.length;
         var seen = {};
@@ -805,7 +968,17 @@
           }
         }
       }
+      function drawTouchStretch(now) {
+        statStrings.textContent = touchLine ? 1 : 0;
+        if (!touchLine) return;
+        var len = distPt(touchLine.a, touchLine.b);
+        touchLenSmooth = touchLenSmooth ? touchLenSmooth * 0.85 + len * 0.15 : len;
+        var p = pitchFromLength(touchLenSmooth);
+        if (p.name !== stretchNoteName) { stretchNoteName = p.name; noteReadout.textContent = p.name; }
+        drawStretchLine(touchLine.a, touchLine.b, true, now);
+      }
       function drawTouchStrings(now) {
+        if (document.getElementById("selStrings").value === "stretch") { drawTouchStretch(now); return; }
         for (var i = 0; i < TOUCH_N; i++) {
           var g = touchGeom(i);
           var st = touchState[i];
@@ -850,6 +1023,22 @@
         var p = stagePos(e);
         pointer.down = true; pointer.x = p.x; pointer.y = p.y; pointer.lastX = p.x; pointer.crossed = {};
         if (touchOn) {
+          if (document.getElementById("selStrings").value === "stretch") {
+            var nowT = performance.now();
+            if (touchLine) {
+              var nearA = distPt(p, touchLine.a) < 48, nearB = distPt(p, touchLine.b) < 48;
+              if (nearA) { touchDragEnd = "a"; return; }
+              if (nearB) { touchDragEnd = "b"; return; }
+              if (distToSeg(p, touchLine.a, touchLine.b).d < 22) {
+                var s = { a: touchLine.a, b: touchLine.b, kind: "gold", id: "touch-stretch" };
+                pluckString(s, stretchVib, 0.9, nowT);
+                return;
+              }
+            }
+            touchLine = { a: { x: p.x, y: p.y }, b: { x: p.x, y: p.y } };
+            touchDragEnd = "b"; touchLineDrawing = true;
+            return;
+          }
           for (var i = 0; i < TOUCH_N; i++) {
             var g = touchGeom(i);
             if (Math.abs(p.x - g.x) < W / TOUCH_N / 2) { pluckTouch(i, 0.85, performance.now()); pointer.crossed[i] = true; }
@@ -873,6 +1062,11 @@
         if (!pointer.down || !touchOn) return;
         var p = stagePos(e);
         var now = performance.now();
+        if (document.getElementById("selStrings").value === "stretch") {
+          if (touchLine && touchDragEnd) touchLine[touchDragEnd] = { x: p.x, y: p.y };
+          pointer.lastX = p.x; pointer.x = p.x; pointer.y = p.y;
+          return;
+        }
         for (var i = 0; i < TOUCH_N; i++) {
           var g = touchGeom(i);
           var crossedNow = (pointer.lastX - g.x) * (p.x - g.x) <= 0 && pointer.lastX !== p.x;
@@ -883,7 +1077,7 @@
         }
         pointer.lastX = p.x; pointer.x = p.x; pointer.y = p.y;
       });
-      function pointerUp() { pointer.down = false; }
+      function pointerUp() { pointer.down = false; touchDragEnd = null; touchLineDrawing = false; }
       stage.addEventListener("pointerup", pointerUp);
       stage.addEventListener("pointercancel", pointerUp);
       stage.addEventListener("pointerleave", pointerUp);
@@ -987,7 +1181,9 @@
         if (!cameraOn) {
           mode = "touch";
           setStatus("Touch harp", "on");
-          stageHint.textContent = "Press and drag across the strings · tap a string · or use keys A–;";
+          stageHint.textContent = document.getElementById("selStrings").value === "stretch"
+            ? "Drag on the stage to draw a line · drag an end to stretch it · tap the line to play"
+            : "Press and drag across the strings · tap a string · or use keys A–;";
         }
       }
       function disableTouch() {
@@ -1026,6 +1222,23 @@
         if (master) master.gain.setTargetAtTime(e.target.value / 100 * 0.9, AC.currentTime, 0.03);
       });
       document.getElementById("selScale").addEventListener("change", function () { ksCache = {}; });
+      document.getElementById("selStrings").addEventListener("change", function () {
+        clearStretchLine();
+        if (touchOn && !cameraOn) {
+          stageHint.textContent = this.value === "stretch"
+            ? "Drag on the stage to draw a line · drag an end to stretch it · tap the line to play"
+            : "Press and drag across the strings · tap a string · or use keys A–;";
+        } else if (cameraOn) {
+          stageHint.textContent = this.value === "stretch"
+            ? "Show both hands — index fingertips set the line"
+            : "Stretch a thread to change its pitch · flick a fingertip to pluck · tap a thread to play it";
+        }
+      });
+      document.getElementById("btnNewLine").addEventListener("click", function () {
+        clearStretchLine();
+        if (cameraOn) stageHint.textContent = "Show both hands — index fingertips set the line";
+        else if (touchOn) stageHint.textContent = "Drag on the stage to draw a line · drag an end to stretch it · tap the line to play";
+      });
     </script>
   </body>
 </html>
