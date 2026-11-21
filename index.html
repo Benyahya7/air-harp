@@ -11,6 +11,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
     <style>
       :root {
         --bg: #f4f2ec;
@@ -330,6 +331,7 @@
           <button class="btn small" id="tglReverb" type="button" aria-pressed="true">Reverb</button>
           <button class="btn small" id="tglChords" type="button" aria-pressed="true" title="Stretch line plays a chord (root + third + fifth) instead of one note">Chords</button>
           <button class="btn small" id="tglHarmony" type="button" aria-pressed="true" title="Harmony: every finger lands in the same key, on the same beat">Harmony</button>
+          <button class="btn small" id="tglMouth" type="button" aria-pressed="false" title="Mouth: open your mouth to sing — wider means a higher note and a louder voice">Mouth</button>
           <label for="rngVol">Volume</label>
           <input type="range" id="rngVol" min="0" max="100" value="80" />
         </div>
@@ -346,6 +348,7 @@
             <li><b>Flick a fingertip</b> quickly to pluck. The faster the flick, the louder the note, and sparks run along the thread.</li>
             <li>With <b>one hand</b>, threads fan out from your thumb to each fingertip instead — open and close your hand to change pitch, flick to play.</li>
             <li><b>Harmony (on by default).</b> Every note snaps to the scale you picked, so one hand or two hands can never play out of key. When Chords is on, all your lines share ONE chord — the line you are playing sets the root, the other lines play its third, fifth and octave. Plucks also land on a gentle beat grid, so fingers that arrive a moment apart still sound together. Turn Harmony off if you want the free glide back.</li>
+            <li><b>Mouth.</b> Turn <b>Mouth</b> on, start the camera and open your mouth — it sings a vocal "ahh". The wider you open it, the higher the note (two octaves, C4 up) and the louder it gets; close it and the voice stops. With Harmony on it stays in key. Your lips are outlined in gold, with a meter at the top showing how open your mouth is.</li>
             <li><b>Several lines at once.</b> Tap <b>Add a line</b> after locking one line and make another — up to 6 lines on screen, each its own string with its own chord. <b>Left hand chooses, right hand plays:</b> pinch an end of a line with one hand to stretch it and choose its chord, touch a line with your other hand to play it — at the same time. Tap <b>New line</b> to clear them all and start over.</li>
             <li><b>Stretch line (two hands).</b> First pick your <b>Instrument</b> above — harp, guitar, banjo, ukulele, violin, soft synth or bell — and leave <b>Chords</b> on if you want a chord, or turn it off for a single note. Then tap <b>Create a line</b> and follow the two steps on screen: <b>Step 1</b> — pinch thumb + index (the big finger) on ONE hand to set the first end; <b>Step 2</b> — pinch thumb + index on your OTHER hand to set the second end, and the line locks between them. Then <b>pinch one end and pull it</b> to stretch the line — the chord (or note) glides smoothly, no steps (longer is lower, shorter is higher). <b>Touch the line with a fingertip of your other hand</b> to sound it while you stretch — hold it there to keep it going, lift it to stop. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, touch and hold the line to play.</li>
             <li>No camera? The <b>touch harp</b> gives you ten strings on screen: press and drag across them, tap them, or use keys <span class="kbd">A</span>–<span class="kbd">;</span>.</li>
@@ -353,7 +356,7 @@
         </section>
         <section class="card">
           <h2>How it works</h2>
-          <p><b>Tracking.</b> MediaPipe's hand landmarker runs in your browser and finds 21 joints per hand, dozens of times a second. The camera feed never leaves the page.</p>
+          <p><b>Tracking.</b> MediaPipe's hand landmarker runs in your browser and finds 21 joints per hand, dozens of times a second. With <b>Mouth</b> on, its face mesh also tracks your lips (468 points) to measure how open your mouth is. The camera feed never leaves the page.</p>
           <p><b>Pitch.</b> Each thread's length is measured every frame and mapped onto the scale you picked — the same physics as a harp string, where length sets the note.</p>
           <p><b>Sound.</b> Every instrument is synthesized live — no audio files. Harp, guitar and banjo use the Karplus-Strong algorithm, which models a vibrating string by feeding a burst of noise through a short feedback loop; ukulele is a soft triangle voice, violin is a bowed sawtooth with vibrato, and bell and soft synth are layered sine voices. With <b>Chords</b> on, the stretch line plays a major triad (root + third + fifth) instead of one note.</p>
           <p><b>Tips.</b> Good light on your hands and a plain background track best. If the camera is blocked or unavailable, the touch harp still plays the full instrument.</p>
@@ -426,6 +429,11 @@
       var chordOn = true; // stretch line plays a chord by default; toggle it off for a single note
       var harmonyOn = true; // Harmony: snap every note to the scale, share one chord across lines, land plucks on the beat
       var sharedRootMidi = null; // the chord root all lines share while Harmony is on
+      var mouthOn = false; // Mouth: your mouth sings — wider open = higher note and louder voice
+      var faceMeshMP = null, latestFace = null; // Face Mesh landmarks, normalized
+      var mouthOpen = 0; // smoothed 0..1 mouth openness
+      var mouthVoice = null; // {osc, lfo, out, midi} formant "ahh" voice
+      var LIPS_OUTER = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185];
       var touchBowOn = false, touchBowFreq = 0;
       var touchLine = null;         // touch fallback: {a:{x,y}, b:{x,y}}
       var touchDragEnd = null;      // "a" | "b" | null
@@ -733,6 +741,91 @@
         statusDot.className = "dot" + (dotClass ? " " + dotClass : "");
       }
 
+      /* ---------------- mouth (Face Mesh vocal) ---------------- */
+      function initFaceMesh() {
+        if (faceMeshMP) return true;
+        if (typeof FaceMesh === "undefined") return false;
+        try {
+          faceMeshMP = new FaceMesh({ locateFile: function (f) { return "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/" + f; } });
+          faceMeshMP.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+          faceMeshMP.onResults(function (res) { latestFace = (res.multiFaceLandmarks && res.multiFaceLandmarks[0]) || null; });
+          return true;
+        } catch (e) { faceMeshMP = null; return false; }
+      }
+      /* Mouth openness 0..1: lip gap (landmarks 13/14) relative to eye distance (33/263). */
+      function mouthOpennessRaw() {
+        if (!latestFace || latestFace.length < 300) return 0;
+        var up = latestFace[13], lo = latestFace[14], e1 = latestFace[33], e2 = latestFace[263];
+        if (!up || !lo || !e1 || !e2) return 0;
+        var d = Math.hypot(lo.x - up.x, lo.y - up.y);
+        var eye = Math.hypot(e2.x - e1.x, e2.y - e1.y) || 0.2;
+        return clamp((d / eye - 0.06) / 0.30, 0, 1);
+      }
+      function startMouthVoice() {
+        ensureAudio();
+        if (!AC || mouthVoice) return;
+        var osc = AC.createOscillator(); osc.type = "sawtooth";
+        var bp1 = AC.createBiquadFilter(); bp1.type = "bandpass"; bp1.frequency.value = 730; bp1.Q.value = 1.1;
+        var bp2 = AC.createBiquadFilter(); bp2.type = "bandpass"; bp2.frequency.value = 1090; bp2.Q.value = 1.4;
+        var g1 = AC.createGain(); g1.gain.value = 0.7;
+        var g2 = AC.createGain(); g2.gain.value = 0.35;
+        var out = AC.createGain(); out.gain.value = 0;
+        osc.connect(bp1); bp1.connect(g1); g1.connect(out);
+        osc.connect(bp2); bp2.connect(g2); g2.connect(out);
+        out.connect(master); if (useReverb) out.connect(verb);
+        var lfo = AC.createOscillator(); lfo.frequency.value = 5.2; // gentle vibrato, like a voice
+        var lfoG = AC.createGain(); lfoG.gain.value = 4;
+        lfo.connect(lfoG); lfoG.connect(osc.frequency);
+        osc.start(); lfo.start();
+        mouthVoice = { osc: osc, lfo: lfo, out: out, midi: null };
+      }
+      function stopMouthVoice() {
+        if (!mouthVoice) return;
+        var mv = mouthVoice; mouthVoice = null;
+        try {
+          mv.out.gain.setTargetAtTime(0, AC.currentTime, 0.05);
+          var t = AC.currentTime + 0.3;
+          mv.osc.stop(t); mv.lfo.stop(t);
+        } catch (e) {}
+      }
+      function drawMouth() {
+        if (!latestFace) return;
+        ctx.save();
+        ctx.strokeStyle = "rgba(233,180,76,0.9)"; ctx.lineWidth = 2;
+        ctx.beginPath();
+        LIPS_OUTER.forEach(function (i, k) {
+          var pt = latestFace[i]; if (!pt) return;
+          var x = W - pt.x * W, y = pt.y * H; // mirror to match the mirrored video
+          if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.closePath(); ctx.stroke();
+        // openness meter, top centre
+        ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.fillRect(W / 2 - 60, 14, 120, 6);
+        ctx.fillStyle = "rgba(233,180,76,0.95)"; ctx.fillRect(W / 2 - 60, 14, 120 * mouthOpen, 6);
+        ctx.restore();
+      }
+      function updateMouth() {
+        if (!mouthOn || !cameraOn) { if (mouthVoice) stopMouthVoice(); mouthOpen = 0; return; }
+        mouthOpen = mouthOpen * 0.65 + mouthOpennessRaw() * 0.35;
+        if (mouthOpen > 0.14) {
+          var mf = 60 + mouthOpen * 24; // C4 up two octaves as the mouth opens wider
+          var midi = harmonyOn ? snapMidi(mf) : Math.round(mf);
+          var freq = midiToFreq(midi);
+          if (!mouthVoice) startMouthVoice();
+          if (mouthVoice) {
+            mouthVoice.osc.frequency.setTargetAtTime(freq, AC.currentTime, 0.03);
+            mouthVoice.out.gain.setTargetAtTime(0.10 + mouthOpen * 0.55, AC.currentTime, 0.05);
+            if (midi !== mouthVoice.midi) {
+              mouthVoice.midi = midi;
+              noteReadout.textContent = midiName(midi) + " · mouth";
+            }
+          }
+        } else if (mouthOpen < 0.07 && mouthVoice) {
+          stopMouthVoice();
+        }
+        drawMouth();
+      }
+
       function startCamera() {
         ensureAudio();
         if (cameraOn) { stopCamera(); return; }
@@ -753,7 +846,9 @@
           handsMP.onResults(onResults);
           mpCamera = new Camera(video, {
             onFrame: function () {
-              return handsMP.send({ image: video }).catch(function () {});
+              var pr = handsMP.send({ image: video }).catch(function () {});
+              if (mouthOn && faceMeshMP) return pr.then(function () { return faceMeshMP.send({ image: video }).catch(function () {}); });
+              return pr;
             },
             width: 1280, height: 720
           });
@@ -795,6 +890,7 @@
         }
         cameraOn = false;
         latestHands = [];
+        latestFace = null; mouthOpen = 0; stopMouthVoice();
         stringState = {};
         clearStretchLine();
         document.getElementById("btnCamera").textContent = "Start camera";
@@ -1481,6 +1577,7 @@
         if (cameraOn) {
           if (showSkeleton) drawSkeleton();
           updateAndDrawStrings(now);
+          updateMouth();
           if (latestHands.length === 0) {
             setStatus("Camera on — no hands in view", "warn");
           } else {
@@ -1544,6 +1641,18 @@
         harmonyOn = on;
         sharedRootMidi = null;
         if (bowActive) stopBow();
+      });
+      wireToggle("tglMouth", function (on) {
+        mouthOn = on;
+        if (on) {
+          if (!initFaceMesh()) {
+            mouthOn = false;
+            document.getElementById("tglMouth").setAttribute("aria-pressed", "false");
+            showMsg("<b>Mouth needs the face model.</b> It didn't arrive from its CDN — check your connection and reload, then try again.", true);
+            return;
+          }
+          if (!cameraOn) showMsg("Mouth is on — start the camera, then open your mouth: wider = higher note and louder voice.", false);
+        } else { stopMouthVoice(); latestFace = null; mouthOpen = 0; }
       });
       document.getElementById("selSound").addEventListener("change", function () {
         // pick your instrument before you play — changing it stops any note already sounding
