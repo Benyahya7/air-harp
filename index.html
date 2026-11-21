@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="data:," />
+    <title>Air Harp</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+      :root {
+        --bg: #f4f2ec;
+        --panel: #ffffff;
+        --panel-2: #ebe8df;
+        --ink: #1d1a14;
+        --ink-soft: #5c564a;
+        --line: #d9d3c4;
+        --gold: #a8740a;
+        --gold-bright: #e9b44c;
+        --teal: #0e7a6d;
+        --stage: #0b0d12;
+        --stage-line: #262a35;
+        --chip-bg: rgba(10, 12, 17, 0.72);
+        --chip-ink: #f3ead2;
+        --danger: #b3372a;
+        --radius: 14px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #101014;
+          --panel: #181920;
+          --panel-2: #20222b;
+          --ink: #efe9db;
+          --ink-soft: #a49c8b;
+          --line: #2e3038;
+          --gold: #e9b44c;
+          --gold-bright: #ffd97a;
+          --teal: #4cc9b8;
+          --danger: #e07a6a;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font-family: "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      button, select, input[type="range"] { min-height: 2.75rem; }
+      button { font: inherit; cursor: pointer; }
+      .wrap { max-width: 1080px; margin: 0 auto; padding: 18px 16px 40px; }
+
+      /* ---------- top bar ---------- */
+      .topbar {
+        display: flex; align-items: baseline; justify-content: space-between;
+        gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
+      }
+      .topbar h1 {
+        font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em; margin: 0;
+      }
+      .topbar h1 .thin { font-weight: 500; color: var(--ink-soft); }
+      .topbar p { margin: 0; color: var(--ink-soft); font-size: 0.92rem; max-width: 52ch; }
+      .live-stats {
+        font-family: "IBM Plex Mono", ui-monospace, monospace;
+        font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap;
+      }
+      .live-stats b { color: var(--ink); font-weight: 600; }
+
+      /* ---------- stage ---------- */
+      .stage-shell {
+        background: var(--stage);
+        border: 1px solid var(--stage-line);
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 18px 44px rgba(8, 8, 12, 0.28);
+      }
+      .stage {
+        position: relative; width: 100%;
+        aspect-ratio: 16 / 9;
+        background: radial-gradient(120% 90% at 50% 0%, #171a23 0%, #0b0d12 62%);
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      @media (max-width: 640px) { .stage { aspect-ratio: 4 / 3.4; } }
+      .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      .src-video { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
+
+      .chip {
+        position: absolute; z-index: 3;
+        background: var(--chip-bg); color: var(--chip-ink);
+        border: 1px solid rgba(255, 217, 122, 0.22);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 0.8rem; font-weight: 600;
+        backdrop-filter: blur(6px);
+        pointer-events: none;
+        max-width: calc(100% - 24px);
+      }
+      .chip.tl { top: 12px; left: 12px; }
+      .chip.tr { top: 12px; right: 12px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 500; }
+      .chip.bc {
+        bottom: 12px; left: 50%; transform: translateX(-50%);
+        text-align: center; font-weight: 500; width: max-content;
+      }
+      .chip .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #6f7686; margin-right: 7px; vertical-align: 1px; }
+      .chip .dot.on { background: #58d68a; box-shadow: 0 0 8px #58d68a; }
+      .chip .dot.warn { background: var(--gold-bright); box-shadow: 0 0 8px var(--gold-bright); }
+
+      .stage-cta {
+        position: absolute; inset: 0; z-index: 4;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 14px; padding: 52px 20px 48px; text-align: center;
+        background: rgba(7, 8, 12, 0.55);
+      }
+      /* while the intro overlay is up, the bottom hint pill is redundant */
+      .stage:has(.stage-cta:not([hidden])) .chip.bc { display: none; }
+      @media (max-width: 640px) {
+        .stage-cta { gap: 10px; padding: 50px 14px 16px; justify-content: flex-start; }
+        .stage-cta h2 { font-size: 1.12rem; }
+        .stage-cta p { font-size: 0.86rem; line-height: 1.45; }
+      }
+      .stage-cta[hidden] { display: none; }
+      .stage-cta h2 { color: #f5efdd; font-size: 1.3rem; margin: 0; font-weight: 800; }
+      .stage-cta p { color: #c9c2ae; margin: 0; max-width: 46ch; font-size: 0.95rem; line-height: 1.5; }
+      .cta-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+      .btn {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--ink);
+        border-radius: 999px;
+        padding: 10px 18px;
+        font-weight: 700; font-size: 0.92rem;
+        display: inline-flex; align-items: center; gap: 8px;
+        transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+      }
+      .btn:active { transform: scale(0.97); }
+      .btn.primary {
+        background: var(--gold); border-color: var(--gold); color: #fff8e8;
+      }
+      @media (prefers-color-scheme: dark) { .btn.primary { color: #221a05; } }
+      .btn.primary:hover { background: var(--gold-bright); border-color: var(--gold-bright); }
+      .btn.on-stage {
+        background: rgba(16, 18, 24, 0.85); color: #f3ead2; border-color: rgba(255, 217, 122, 0.4);
+      }
+      .btn.on-stage.primary { background: var(--gold-bright); color: #221a05; border-color: var(--gold-bright); }
+      .btn[aria-pressed="true"] { background: var(--panel-2); border-color: var(--gold); color: var(--ink); box-shadow: inset 0 0 0 1px var(--gold); }
+      .btn.small { padding: 8px 14px; font-size: 0.86rem; }
+      .btn:disabled { opacity: 0.55; cursor: wait; }
+
+      /* ---------- controls ---------- */
+      .controls {
+        display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch;
+        margin-top: 14px;
+      }
+      .ctl-group {
+        background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+        padding: 10px 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      }
+      .ctl-group label { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); }
+      select {
+        font: inherit; font-size: 0.92rem; font-weight: 600;
+        background: var(--panel-2); color: var(--ink);
+        border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+      }
+      input[type="range"] { width: 110px; accent-color: var(--gold); }
+      .grow { flex: 1 1 auto; }
+
+      .msg {
+        margin-top: 12px; border-radius: var(--radius);
+        padding: 12px 14px; font-size: 0.92rem; line-height: 1.5;
+        border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+      }
+      .msg[hidden] { display: none; }
+      .msg.err { border-color: var(--danger); }
+      .msg b { font-weight: 800; }
+
+      /* ---------- info sections ---------- */
+      .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 22px; }
+      @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+      .card {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 18px 18px 14px;
+      }
+      .card h2 { font-size: 1.02rem; margin: 0 0 10px; font-weight: 800; }
+      .card p, .card li { color: var(--ink-soft); font-size: 0.93rem; line-height: 1.55; }
+      .card p { margin: 0 0 8px; }
+      .card ol, .card ul { margin: 0; padding-left: 20px; }
+      .card li { margin-bottom: 6px; }
+      .card li b, .card p b { color: var(--ink); }
+      .kbd {
+        font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.82em;
+        background: var(--panel-2); border: 1px solid var(--line); border-bottom-width: 2px;
+        border-radius: 6px; padding: 1px 6px; color: var(--ink);
+      }
+      footer { margin-top: 22px; color: var(--ink-soft); font-size: 0.84rem; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="topbar">
+        <div>
+          <h1>Air Harp <span class="thin">— strings of light, played with your hands</span></h1>
+          <p>Hold your hands up to the camera. Threads stretch between your fingertips — pull them longer for low notes, shorter for high ones, and flick to pluck.</p>
+        </div>
+        <div class="live-stats" id="liveStats">notes played <b id="statNotes">0</b> · strings <b id="statStrings">0</b></div>
+      </div>
+
+      <div class="stage-shell">
+        <div class="stage" id="stage">
+          <video class="src-video" id="video" playsinline muted></video>
+          <canvas id="canvas"></canvas>
+          <div class="chip tl"><span class="dot" id="statusDot"></span><span id="statusText">Camera off</span></div>
+          <div class="chip tr" id="noteReadout">—</div>
+          <div class="chip bc" id="stageHint">Start the camera, or play the touch harp</div>
+          <div class="stage-cta" id="stageCta">
+            <h2>Your hands are the instrument</h2>
+            <p>The camera tracks 21 joints on each hand and strings a glowing thread between your fingertips. Nothing is recorded or uploaded — tracking runs entirely in this page.</p>
+            <div class="cta-row">
+              <button class="btn on-stage primary" id="ctaCamera" type="button">Start camera</button>
+              <button class="btn on-stage" id="ctaTouch" type="button">Play touch harp instead</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="ctl-group">
+          <button class="btn primary" id="btnCamera" type="button">Start camera</button>
+          <button class="btn" id="btnTouch" type="button" aria-pressed="false">Touch harp</button>
+        </div>
+        <div class="ctl-group">
+          <label for="selStrings">Strings</label>
+          <select id="selStrings">
+            <option value="auto" selected>Auto</option>
+            <option value="pairs">Between both hands</option>
+            <option value="fan">Thumb fan (one hand)</option>
+          </select>
+          <label for="selScale">Scale</label>
+          <select id="selScale">
+            <option value="pentatonic" selected>Pentatonic</option>
+            <option value="major">Major</option>
+            <option value="minor">Minor pentatonic</option>
+            <option value="glide">Glide (no steps)</option>
+          </select>
+          <label for="selSound">Sound</label>
+          <select id="selSound">
+            <option value="harp" selected>Plucked string</option>
+            <option value="soft">Soft synth</option>
+            <option value="bell">Bell</option>
+          </select>
+        </div>
+        <div class="ctl-group grow">
+          <button class="btn small" id="tglSkeleton" type="button" aria-pressed="true">Hand skeleton</button>
+          <button class="btn small" id="tglSparks" type="button" aria-pressed="true">Sparks</button>
+          <button class="btn small" id="tglReverb" type="button" aria-pressed="true">Reverb</button>
+          <label for="rngVol">Volume</label>
+          <input type="range" id="rngVol" min="0" max="100" value="80" />
+        </div>
+      </div>
+
+      <div class="msg" id="msgBox" hidden></div>
+
+      <div class="cols">
+        <section class="card">
+          <h2>How to play</h2>
+          <ol>
+            <li><b>Raise both hands</b> in front of the camera, palms facing it, about an arm's length away. Threads appear between matching fingertips.</li>
+            <li><b>Stretch or shrink a thread</b> by moving your hands apart or together — longer is lower, shorter is higher, just like a real string.</li>
+            <li><b>Flick a fingertip</b> quickly to pluck. The faster the flick, the louder the note, and sparks run along the thread.</li>
+            <li>With <b>one hand</b>, threads fan out from your thumb to each fingertip instead — open and close your hand to change pitch, flick to play.</li>
+            <li>No camera? The <b>touch harp</b> gives you ten strings on screen: press and drag across them, tap them, or use keys <span class="kbd">A</span>–<span class="kbd">;</span>.</li>
+          </ol>
+        </section>
+        <section class="card">
+          <h2>How it works</h2>
+          <p><b>Tracking.</b> MediaPipe's hand landmarker runs in your browser and finds 21 joints per hand, dozens of times a second. The camera feed never leaves the page.</p>
+          <p><b>Pitch.</b> Each thread's length is measured every frame and mapped onto the scale you picked — the same physics as a harp string, where length sets the note.</p>
+          <p><b>Sound.</b> A pluck is synthesized live with the Karplus-Strong algorithm, which models a vibrating string by feeding a burst of noise through a short feedback loop — no audio files involved.</p>
+          <p><b>Tips.</b> Good light on your hands and a plain background track best. If the camera is blocked or unavailable, the touch harp still plays the full instrument.</p>
+        </section>
+      </div>
+
+      <footer>
+        Built after @sonicdeadhorse's TouchDesigner air harp — same idea, rebuilt for the browser: webcam in, music out.
+      </footer>
+    </div>
+
+    <script>
+      "use strict";
+      /* ============================================================
+         Air Harp — MediaPipe hand tracking + WebAudio plucked strings
+         ============================================================ */
+      var stage = document.getElementById("stage");
+      var video = document.getElementById("video");
+      var canvas = document.getElementById("canvas");
+      var ctx = canvas.getContext("2d");
+      var statusDot = document.getElementById("statusDot");
+      var statusText = document.getElementById("statusText");
+      var noteReadout = document.getElementById("noteReadout");
+      var stageHint = document.getElementById("stageHint");
+      var stageCta = document.getElementById("stageCta");
+      var msgBox = document.getElementById("msgBox");
+      var statNotes = document.getElementById("statNotes");
+      var statStrings = document.getElementById("statStrings");
+
+      var W = 0, H = 0, DPR = 1;
+      function fitCanvas() {
+        var r = stage.getBoundingClientRect();
+        DPR = Math.min(window.devicePixelRatio || 1, 2);
+        W = Math.max(2, Math.round(r.width));
+        H = Math.max(2, Math.round(r.height));
+        canvas.width = Math.round(W * DPR);
+        canvas.height = Math.round(H * DPR);
+      }
+      fitCanvas();
+      if (window.ResizeObserver) new ResizeObserver(fitCanvas).observe(stage);
+      window.addEventListener("resize", fitCanvas);
+
+      /* ---------------- state ---------------- */
+      var mode = "idle";            // idle | camera | touch
+      var cameraOn = false;
+      var touchOn = false;
+      var handsMP = null, mpCamera = null;
+      var latestHands = [];         // [{pts:[{x,y}...]}] in canvas px, mirrored
+      var stringState = {};         // id -> persistent per-string state
+      var particles = [];
+      var ghosts = [];
+      var labels = [];
+      var notesPlayed = 0;
+      var lastNoteName = "—";
+      var showSkeleton = true, showSparks = true, useReverb = true;
+
+      var NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+      var SCALES = {
+        pentatonic: [0, 2, 4, 7, 9],
+        major: [0, 2, 4, 5, 7, 9, 11],
+        minor: [0, 3, 5, 7, 10]
+      };
+      var BASE_MIDI = 48; // C3
+
+      function midiToFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+      function midiName(m) {
+        var r = Math.round(m);
+        return NOTE_NAMES[((r % 12) + 12) % 12] + (Math.floor(r / 12) - 1);
+      }
+      function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+
+      /* pitch from string length. lenNorm 0 (short) .. 1 (long) */
+      function pitchFromLength(lenPx) {
+        var lenNorm = clamp(lenPx / (W * 0.82), 0, 1);
+        var scaleName = document.getElementById("selScale").value;
+        if (scaleName === "glide") {
+          var mf = 84 - lenNorm * 33; // C6 down to ~C3, continuous
+          return { freq: midiToFreq(mf), name: midiName(mf) + " ~" };
+        }
+        var scale = SCALES[scaleName] || SCALES.pentatonic;
+        var totalSteps = scale.length * 2 + 1; // just over two octaves
+        var idx = Math.round((1 - lenNorm) * (totalSteps - 1));
+        var midi = BASE_MIDI + 12 * Math.floor(idx / scale.length) + scale[idx % scale.length];
+        return { freq: midiToFreq(midi), name: midiName(midi) };
+      }
+
+      /* ---------------- audio ---------------- */
+      var AC = null, master = null, verb = null, verbGain = null, ksCache = {};
+      function ensureAudio() {
+        if (AC) { if (AC.state === "suspended") AC.resume(); return; }
+        var Ctor = window.AudioContext || window.webkitAudioContext;
+        if (!Ctor) return;
+        AC = new Ctor();
+        var comp = AC.createDynamicsCompressor();
+        comp.threshold.value = -18; comp.ratio.value = 6;
+        comp.connect(AC.destination);
+        master = AC.createGain();
+        master.gain.value = document.getElementById("rngVol").value / 100 * 0.9;
+        master.connect(comp);
+        // generated impulse reverb
+        verb = AC.createConvolver();
+        verb.buffer = makeImpulse(1.9, 2.6);
+        verbGain = AC.createGain();
+        verbGain.gain.value = useReverb ? 0.33 : 0;
+        verb.connect(verbGain); verbGain.connect(master);
+      }
+      function makeImpulse(dur, decay) {
+        var sr = AC.sampleRate, len = Math.floor(sr * dur);
+        var buf = AC.createBuffer(2, len, sr);
+        for (var ch = 0; ch < 2; ch++) {
+          var d = buf.getChannelData(ch);
+          for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+        }
+        return buf;
+      }
+      /* Karplus-Strong plucked string, rendered to a buffer and cached */
+      function ksBuffer(freq) {
+        var key = Math.round(freq * 2);
+        if (ksCache[key]) return ksCache[key];
+        var sr = AC.sampleRate, dur = 2.4, len = Math.floor(sr * dur);
+        var buf = AC.createBuffer(1, len, sr);
+        var d = buf.getChannelData(0);
+        var N = Math.max(2, Math.round(sr / freq));
+        var rb = new Float32Array(N);
+        for (var i = 0; i < N; i++) rb[i] = Math.random() * 2 - 1;
+        var idx = 0;
+        var damp = freq < 160 ? 0.996 : 0.994;
+        for (var j = 0; j < len; j++) {
+          var cur = rb[idx];
+          var nxt = rb[(idx + 1) % N];
+          rb[idx] = damp * 0.5 * (cur + nxt);
+          d[j] = cur;
+          idx = (idx + 1) % N;
+        }
+        if (Object.keys(ksCache).length > 40) ksCache = {};
+        ksCache[key] = buf;
+        return buf;
+      }
+      function playNote(freq, name, velocity) {
+        ensureAudio();
+        if (!AC) return;
+        velocity = clamp(velocity == null ? 0.8 : velocity, 0.08, 1);
+        var engine = document.getElementById("selSound").value;
+        var t = AC.currentTime;
+        var out = AC.createGain(); out.gain.value = velocity;
+        out.connect(master);
+        if (useReverb) out.connect(verb);
+        if (engine === "harp") {
+          var src = AC.createBufferSource();
+          src.buffer = ksBuffer(freq);
+          var lp = AC.createBiquadFilter();
+          lp.type = "lowpass"; lp.frequency.value = clamp(freq * 7, 900, 12000); lp.Q.value = 0.4;
+          src.connect(lp); lp.connect(out);
+          src.start(t);
+        } else if (engine === "soft") {
+          var g = AC.createGain();
+          g.gain.setValueAtTime(0.9, t);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 1.7);
+          var o1 = AC.createOscillator(); o1.type = "triangle"; o1.frequency.value = freq;
+          var o2 = AC.createOscillator(); o2.type = "sine"; o2.frequency.value = freq * 2;
+          var g2 = AC.createGain(); g2.gain.value = 0.32;
+          var lp2 = AC.createBiquadFilter(); lp2.type = "lowpass"; lp2.frequency.value = 2600;
+          o1.connect(g); o2.connect(g2); g2.connect(g); g.connect(lp2); lp2.connect(out);
+          o1.start(t); o2.start(t); o1.stop(t + 1.8); o2.stop(t + 1.8);
+        } else { // bell
+          var partials = [[1, 1, 2.6], [2.76, 0.45, 1.4], [5.4, 0.18, 0.7]];
+          partials.forEach(function (p) {
+            var o = AC.createOscillator(); o.type = "sine"; o.frequency.value = freq * p[0];
+            var g = AC.createGain();
+            g.gain.setValueAtTime(p[1] * 0.6, t);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + p[2]);
+            o.connect(g); g.connect(out);
+            o.start(t); o.stop(t + p[2] + 0.1);
+          });
+        }
+        notesPlayed++;
+        statNotes.textContent = notesPlayed;
+        lastNoteName = name;
+        noteReadout.textContent = name;
+      }
+
+      /* ---------------- hand tracking ---------------- */
+      var CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+      var FINGERTIPS = [8, 12, 16, 20];
+
+      function onResults(res) {
+        var hands = [];
+        if (res.multiHandLandmarks) {
+          for (var i = 0; i < res.multiHandLandmarks.length; i++) {
+            var lm = res.multiHandLandmarks[i];
+            var npts = [];
+            for (var j = 0; j < lm.length; j++) {
+              npts.push({ x: 1 - lm[j].x, y: lm[j].y }); // mirror x for selfie view
+            }
+            hands.push({ npts: npts });
+          }
+        }
+        latestHands = hands;
+      }
+      /* normalized landmark -> canvas px, through the same cover-fit
+         crop the video is drawn with, so fingertips sit exactly on the picture */
+      function toPx(p) {
+        if (cameraOn && video.videoWidth) {
+          var vw = video.videoWidth, vh = video.videoHeight;
+          var scale = Math.max(W / vw, H / vh);
+          var dw = vw * scale, dh = vh * scale;
+          return { x: (W - dw) / 2 + p.x * dw, y: (H - dh) / 2 + p.y * dh };
+        }
+        return { x: p.x * W, y: p.y * H };
+      }
+      function handPx(h) { return h.npts.map(toPx); }
+
+      function showMsg(html, isErr) {
+        msgBox.innerHTML = html;
+        msgBox.className = "msg" + (isErr ? " err" : "");
+        msgBox.hidden = false;
+      }
+      function setStatus(text, dotClass) {
+        statusText.textContent = text;
+        statusDot.className = "dot" + (dotClass ? " " + dotClass : "");
+      }
+
+      function startCamera() {
+        ensureAudio();
+        if (cameraOn) { stopCamera(); return; }
+        if (typeof Hands === "undefined" || typeof Camera === "undefined") {
+          showMsg("<b>Hand tracking could not load.</b> The MediaPipe library didn't arrive from its CDN — check your connection and reload, or play the touch harp meanwhile.", true);
+          return;
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          showMsg("<b>No camera access in this browser view.</b> The touch harp below plays the same instrument without one.", true);
+          enableTouch();
+          return;
+        }
+        var btn = document.getElementById("btnCamera");
+        btn.disabled = true; btn.textContent = "Starting…";
+        try {
+          handsMP = new Hands({ locateFile: function (f) { return "https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/" + f; } });
+          handsMP.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
+          handsMP.onResults(onResults);
+          mpCamera = new Camera(video, {
+            onFrame: function () {
+              return handsMP.send({ image: video }).catch(function () {});
+            },
+            width: 1280, height: 720
+          });
+          var p = mpCamera.start();
+          if (p && p.catch) p.catch(function () {});
+          // Camera utils swallows getUserMedia errors; watch the video stream instead.
+          var tries = 0;
+          var watcher = setInterval(function () {
+            tries++;
+            if (video.srcObject && video.readyState >= 2) {
+              clearInterval(watcher);
+              cameraOn = true; mode = "camera";
+              btn.disabled = false; btn.textContent = "Stop camera";
+              document.getElementById("ctaCamera").textContent = "Camera on";
+              stageCta.hidden = true;
+              setStatus("Camera on — show your hands", "on");
+              stageHint.textContent = "Stretch a thread to change its pitch · flick a fingertip to pluck · tap a thread to play it";
+              msgBox.hidden = true;
+            } else if (tries > 24) {
+              clearInterval(watcher);
+              btn.disabled = false; btn.textContent = "Start camera";
+              try { mpCamera.stop(); } catch (e) {}
+              showMsg("<b>The camera didn't start.</b> It may be blocked in this view or in use by another app. Allow camera access and try again — or play the touch harp, which needs no camera.", true);
+              setStatus("Camera blocked", "warn");
+              enableTouch();
+            }
+          }, 250);
+        } catch (e) {
+          btn.disabled = false; btn.textContent = "Start camera";
+          showMsg("<b>The camera didn't start.</b> " + (e && e.message ? e.message : "") + " The touch harp plays the same instrument without one.", true);
+          enableTouch();
+        }
+      }
+      function stopCamera() {
+        try { if (mpCamera) mpCamera.stop(); } catch (e) {}
+        if (video.srcObject) {
+          video.srcObject.getTracks().forEach(function (t) { t.stop(); });
+          video.srcObject = null;
+        }
+        cameraOn = false;
+        latestHands = [];
+        stringState = {};
+        document.getElementById("btnCamera").textContent = "Start camera";
+        document.getElementById("ctaCamera").textContent = "Start camera";
+        setStatus(touchOn ? "Touch harp" : "Camera off", touchOn ? "on" : "");
+        mode = touchOn ? "touch" : "idle";
+        if (!touchOn) { stageCta.hidden = false; stageHint.textContent = "Start the camera, or play the touch harp"; }
+      }
+
+      /* ---------------- strings from hands ---------------- */
+      function buildStrings() {
+        var out = [];
+        var pref = document.getElementById("selStrings").value;
+        var hs = latestHands.map(function (h) { return { pts: handPx(h) }; });
+        if (hs.length === 2 && pref !== "fan") {
+          var sorted = hs.slice().sort(function (a, b) { return a.pts[0].x - b.pts[0].x; });
+          FINGERTIPS.forEach(function (tip) {
+            out.push({ id: "pair" + tip, a: sorted[0].pts[tip], b: sorted[1].pts[tip], kind: "pair" });
+          });
+          return out; // two hands: threads between matching fingertips, like the original video
+        }
+        if (hs.length >= 1) {
+          hs.forEach(function (h, hi) {
+            FINGERTIPS.forEach(function (tip) {
+              out.push({ id: "fan" + hi + "-" + tip, a: h.pts[4], b: h.pts[tip], kind: hi ? "teal" : "gold" });
+            });
+          });
+        }
+        return out;
+      }
+
+      function stringColor(kind, alpha) {
+        if (kind === "pair") return "rgba(255, 217, 122," + alpha + ")";
+        if (kind === "teal") return "rgba(110, 231, 214," + alpha + ")";
+        return "rgba(255, 205, 92," + alpha + ")";
+      }
+
+      function pluckString(s, st, velocity, now) {
+        var len = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+        var p = pitchFromLength(len);
+        playNote(p.freq, p.name, velocity);
+        st.vibT0 = now; st.vibAmp = 5 + velocity * 13; st.vibFreq = clamp(p.freq / 26, 7, 26);
+        st.lastPluck = now;
+        var mx = (s.a.x + s.b.x) / 2, my = (s.a.y + s.b.y) / 2;
+        labels.push({ x: mx, y: my - 14, text: p.name, t0: now, kind: s.kind });
+        ghosts.push({ a: { x: s.a.x, y: s.a.y }, b: { x: s.b.x, y: s.b.y }, t0: now, kind: s.kind });
+        if (showSparks) {
+          for (var i = 0; i < 16; i++) {
+            var tt = Math.random();
+            particles.push({
+              x: s.a.x + (s.b.x - s.a.x) * tt, y: s.a.y + (s.b.y - s.a.y) * tt,
+              vx: (s.b.x - s.a.x) * (tt < 0.5 ? -1 : 1) * (0.6 + Math.random()) * 0.9 + (Math.random() - 0.5) * 60,
+              vy: (s.b.y - s.a.y) * (tt < 0.5 ? -1 : 1) * (0.6 + Math.random()) * 0.9 + (Math.random() - 0.5) * 60,
+              t0: now, life: 420 + Math.random() * 380, kind: s.kind
+            });
+          }
+        }
+      }
+
+      function updateAndDrawStrings(now) {
+        var strings = buildStrings();
+        statStrings.textContent = strings.length;
+        var seen = {};
+        strings.forEach(function (s) {
+          seen[s.id] = true;
+          var st = stringState[s.id];
+          if (!st) {
+            st = stringState[s.id] = { prevA: s.a, prevB: s.b, prevLen: 0, prevT: now, lastPluck: 0, vibT0: -1e9, vibAmp: 0, vibFreq: 10 };
+          }
+          var dt = Math.max(1, now - st.prevT) / 1000;
+          var len = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+          var spA = Math.hypot(s.a.x - st.prevA.x, s.a.y - st.prevA.y) / dt;
+          var spB = Math.hypot(s.b.x - st.prevB.x, s.b.y - st.prevB.y) / dt;
+          var stretch = Math.abs(len - st.prevLen) / dt;
+          var energy = Math.max(Math.max(spA, spB), stretch * 1.35);
+          // a quick flick plucks: fast fingertip motion on a taut-enough thread
+          if (len > 42 && energy > W * 1.05 && now - st.lastPluck > 230) {
+            pluckString(s, st, clamp((energy - W * 1.05) / (W * 2.1) + 0.35, 0.2, 1), now);
+          }
+          st.prevA = { x: s.a.x, y: s.a.y };
+          st.prevB = { x: s.b.x, y: s.b.y };
+          st.prevLen = len; st.prevT = now;
+          drawString(s, st, now);
+        });
+        Object.keys(stringState).forEach(function (id) { if (!seen[id]) delete stringState[id]; });
+        return strings;
+      }
+
+      function drawString(s, st, now) {
+        var age = now - st.vibT0;
+        var amp = age < 900 ? st.vibAmp * Math.exp(-age / 260) : 0;
+        var phase = (now / 1000) * st.vibFreq * Math.PI * 2;
+        var dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+        var len = Math.max(1, Math.hypot(dx, dy));
+        var px = -dy / len, py = dx / len;
+        ctx.save();
+        ctx.lineCap = "round";
+        // glow pass
+        ctx.beginPath();
+        var SEG = 22;
+        for (var i = 0; i <= SEG; i++) {
+          var t = i / SEG;
+          var off = amp * Math.sin(Math.PI * t) * Math.sin(phase);
+          var x = s.a.x + dx * t + px * off, y = s.a.y + dy * t + py * off;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = stringColor(s.kind, 0.30);
+        ctx.lineWidth = 7;
+        ctx.shadowColor = stringColor(s.kind, 0.9);
+        ctx.shadowBlur = 16;
+        ctx.stroke();
+        // core pass
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = stringColor(s.kind, 0.95);
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+        // fingertip nodes
+        [s.a, s.b].forEach(function (p) {
+          ctx.beginPath();
+          ctx.fillStyle = "rgba(255,244,214,0.95)";
+          ctx.shadowColor = "rgba(255,217,122,0.9)"; ctx.shadowBlur = 10;
+          ctx.arc(p.x, p.y, 3.4, 0, Math.PI * 2); ctx.fill();
+          ctx.shadowBlur = 0;
+        });
+      }
+
+      function drawSkeleton() {
+        latestHands.forEach(function (hRaw) {
+          var h = { pts: handPx(hRaw) };
+          ctx.save();
+          ctx.strokeStyle = "rgba(120, 220, 160, 0.55)";
+          ctx.lineWidth = 1.4;
+          CONNECTIONS.forEach(function (c) {
+            ctx.beginPath();
+            ctx.moveTo(h.pts[c[0]].x, h.pts[c[0]].y);
+            ctx.lineTo(h.pts[c[1]].x, h.pts[c[1]].y);
+            ctx.stroke();
+          });
+          h.pts.forEach(function (p, i) {
+            ctx.beginPath();
+            ctx.fillStyle = FINGERTIPS.indexOf(i) >= 0 || i === 4 ? "rgba(255,120,110,0.95)" : "rgba(140,240,170,0.9)";
+            ctx.arc(p.x, p.y, FINGERTIPS.indexOf(i) >= 0 || i === 4 ? 3.6 : 2.4, 0, Math.PI * 2);
+            ctx.fill();
+          });
+          ctx.restore();
+        });
+      }
+
+      /* ---------------- touch harp ---------------- */
+      var TOUCH_N = 10;
+      var touchState = {}; // i -> {vibT0, vibAmp, vibFreq}
+      function touchNote(i) {
+        var scaleName = document.getElementById("selScale").value;
+        if (scaleName === "glide") {
+          var mf = BASE_MIDI + 5 + i * 2.4;
+          return { freq: midiToFreq(mf), name: midiName(mf) };
+        }
+        var scale = SCALES[scaleName] || SCALES.pentatonic;
+        var midi = BASE_MIDI + 12 * Math.floor(i / scale.length) + scale[i % scale.length];
+        return { freq: midiToFreq(midi), name: midiName(midi) };
+      }
+      function touchGeom(i) {
+        var x = (i + 0.5) / TOUCH_N * W;
+        return { x: x, y0: H * 0.07, y1: H * 0.93 };
+      }
+      function pluckTouch(i, velocity, now) {
+        var n = touchNote(i);
+        playNote(n.freq, n.name, velocity);
+        touchState[i] = { vibT0: now, vibAmp: 6 + velocity * 12, vibFreq: clamp(n.freq / 26, 7, 26) };
+        var g = touchGeom(i);
+        labels.push({ x: g.x, y: g.y0 + 26, text: n.name, t0: now, kind: "gold" });
+        if (showSparks) {
+          for (var k = 0; k < 12; k++) {
+            var tt = Math.random();
+            particles.push({
+              x: g.x, y: g.y0 + (g.y1 - g.y0) * tt,
+              vx: (Math.random() - 0.5) * 260, vy: (Math.random() - 0.5) * 120,
+              t0: now, life: 380 + Math.random() * 320, kind: "gold"
+            });
+          }
+        }
+      }
+      function drawTouchStrings(now) {
+        for (var i = 0; i < TOUCH_N; i++) {
+          var g = touchGeom(i);
+          var st = touchState[i];
+          var age = st ? now - st.vibT0 : 1e9;
+          var amp = st && age < 900 ? st.vibAmp * Math.exp(-age / 260) : 0;
+          var phase = (now / 1000) * (st ? st.vibFreq : 10) * Math.PI * 2;
+          ctx.save();
+          ctx.beginPath();
+          var SEG = 24;
+          for (var j = 0; j <= SEG; j++) {
+            var t = j / SEG;
+            var off = amp * Math.sin(Math.PI * t) * Math.sin(phase);
+            var x = g.x + off, y = g.y0 + (g.y1 - g.y0) * t;
+            if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          }
+          ctx.strokeStyle = "rgba(255, 205, 92, 0.28)";
+          ctx.lineWidth = 6; ctx.shadowColor = "rgba(255,205,92,0.85)"; ctx.shadowBlur = 14;
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.strokeStyle = "rgba(255, 217, 122, 0.92)";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.restore();
+          // note label at base
+          ctx.save();
+          ctx.fillStyle = "rgba(243, 234, 210, 0.75)";
+          ctx.font = "600 11px 'IBM Plex Mono', monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(touchNote(i).name, g.x, g.y1 + 16 > H ? H - 6 : g.y1 + 16);
+          ctx.restore();
+        }
+        statStrings.textContent = TOUCH_N;
+      }
+
+      var pointer = { down: false, x: 0, y: 0, lastX: 0, crossed: {} };
+      function stagePos(e) {
+        var r = canvas.getBoundingClientRect();
+        return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) };
+      }
+      stage.addEventListener("pointerdown", function (e) {
+        ensureAudio();
+        var p = stagePos(e);
+        pointer.down = true; pointer.x = p.x; pointer.y = p.y; pointer.lastX = p.x; pointer.crossed = {};
+        if (touchOn) {
+          for (var i = 0; i < TOUCH_N; i++) {
+            var g = touchGeom(i);
+            if (Math.abs(p.x - g.x) < W / TOUCH_N / 2) { pluckTouch(i, 0.85, performance.now()); pointer.crossed[i] = true; }
+          }
+        } else if (cameraOn) {
+          // tap near a thread's midpoint to pluck it directly
+          var strings = buildStrings();
+          var best = null, bestD = 70;
+          strings.forEach(function (s) {
+            var mx = (s.a.x + s.b.x) / 2, my = (s.a.y + s.b.y) / 2;
+            var d = Math.hypot(p.x - mx, p.y - my);
+            if (d < bestD) { bestD = d; best = s; }
+          });
+          if (best) {
+            var st = stringState[best.id];
+            if (st) pluckString(best, st, 0.9, performance.now());
+          }
+        }
+      });
+      stage.addEventListener("pointermove", function (e) {
+        if (!pointer.down || !touchOn) return;
+        var p = stagePos(e);
+        var now = performance.now();
+        for (var i = 0; i < TOUCH_N; i++) {
+          var g = touchGeom(i);
+          var crossedNow = (pointer.lastX - g.x) * (p.x - g.x) <= 0 && pointer.lastX !== p.x;
+          if (crossedNow && Math.abs(p.x - pointer.lastX) > 1) {
+            var vel = clamp(Math.abs(p.x - pointer.lastX) / (W * 0.24) + 0.3, 0.25, 1);
+            pluckTouch(i, vel, now);
+          }
+        }
+        pointer.lastX = p.x; pointer.x = p.x; pointer.y = p.y;
+      });
+      function pointerUp() { pointer.down = false; }
+      stage.addEventListener("pointerup", pointerUp);
+      stage.addEventListener("pointercancel", pointerUp);
+      stage.addEventListener("pointerleave", pointerUp);
+
+      var KEYMAP = { a: 0, s: 1, d: 2, f: 3, g: 4, h: 5, j: 6, k: 7, l: 8, ";": 9 };
+      document.addEventListener("keydown", function (e) {
+        if (!touchOn) return;
+        var k = e.key.toLowerCase();
+        if (k in KEYMAP) { ensureAudio(); pluckTouch(KEYMAP[k], 0.85, performance.now()); }
+      });
+
+      /* ---------------- fx: ghosts, particles, labels ---------------- */
+      function drawFx(now) {
+        ghosts = ghosts.filter(function (g) { return now - g.t0 < 1100; });
+        ghosts.forEach(function (g) {
+          var a = 0.30 * (1 - (now - g.t0) / 1100);
+          ctx.save();
+          ctx.strokeStyle = stringColor(g.kind, a);
+          ctx.lineWidth = 1.6;
+          ctx.beginPath(); ctx.moveTo(g.a.x, g.a.y); ctx.lineTo(g.b.x, g.b.y); ctx.stroke();
+          ctx.restore();
+        });
+        particles = particles.filter(function (p) { return now - p.t0 < p.life; });
+        particles.forEach(function (p) {
+          var age = (now - p.t0) / 1000;
+          var x = p.x + p.vx * age, y = p.y + p.vy * age;
+          var a = 1 - (now - p.t0) / p.life;
+          ctx.save();
+          ctx.fillStyle = stringColor(p.kind, a * 0.95);
+          ctx.shadowColor = stringColor(p.kind, 0.9); ctx.shadowBlur = 8;
+          ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+        });
+        labels = labels.filter(function (l) { return now - l.t0 < 950; });
+        labels.forEach(function (l) {
+          var t = (now - l.t0) / 950;
+          ctx.save();
+          ctx.globalAlpha = 1 - t;
+          ctx.fillStyle = "#ffe9ad";
+          ctx.font = "600 15px 'IBM Plex Mono', monospace";
+          ctx.textAlign = "center";
+          ctx.shadowColor = "rgba(0,0,0,0.7)"; ctx.shadowBlur = 6;
+          ctx.fillText(l.text, l.x, l.y - t * 18);
+          ctx.restore();
+        });
+      }
+
+      /* ---------------- render loop ---------------- */
+      function drawVideoCover() {
+        if (!video.videoWidth) return;
+        var vw = video.videoWidth, vh = video.videoHeight;
+        var scale = Math.max(W / vw, H / vh);
+        var dw = vw * scale, dh = vh * scale;
+        ctx.save();
+        ctx.translate(W, 0); ctx.scale(-1, 1); // mirror to match mirrored landmarks
+        ctx.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        ctx.restore();
+        // gentle darkening so threads read over the picture
+        ctx.fillStyle = "rgba(5, 6, 10, 0.22)";
+        ctx.fillRect(0, 0, W, H);
+      }
+      function drawIdleBackdrop(now) {
+        ctx.fillStyle = "#0b0d12";
+        ctx.fillRect(0, 0, W, H);
+        // faint resting threads so the stage never looks dead
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 205, 92, 0.10)";
+        ctx.lineWidth = 1.4;
+        for (var i = 0; i < 5; i++) {
+          var y = H * (0.24 + i * 0.13) + Math.sin(now / 1600 + i) * 3;
+          ctx.beginPath(); ctx.moveTo(W * 0.08, y); ctx.lineTo(W * 0.92, y - H * 0.05); ctx.stroke();
+        }
+        ctx.restore();
+      }
+      function render(now) {
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+        ctx.clearRect(0, 0, W, H);
+        if (cameraOn && video.readyState >= 2) drawVideoCover();
+        else drawIdleBackdrop(now);
+        if (cameraOn) {
+          if (showSkeleton) drawSkeleton();
+          updateAndDrawStrings(now);
+          if (latestHands.length === 0) {
+            setStatus("Camera on — no hands in view", "warn");
+          } else {
+            setStatus(latestHands.length + (latestHands.length === 1 ? " hand" : " hands") + " tracked", "on");
+          }
+        } else if (touchOn) {
+          drawTouchStrings(now);
+        }
+        drawFx(now);
+        requestAnimationFrame(render);
+      }
+      requestAnimationFrame(render);
+
+      /* ---------------- controls wiring ---------------- */
+      function enableTouch() {
+        touchOn = true;
+        document.getElementById("btnTouch").setAttribute("aria-pressed", "true");
+        stageCta.hidden = true;
+        if (!cameraOn) {
+          mode = "touch";
+          setStatus("Touch harp", "on");
+          stageHint.textContent = "Press and drag across the strings · tap a string · or use keys A–;";
+        }
+      }
+      function disableTouch() {
+        touchOn = false;
+        document.getElementById("btnTouch").setAttribute("aria-pressed", "false");
+        if (!cameraOn) {
+          mode = "idle";
+          setStatus("Camera off", "");
+          stageCta.hidden = false;
+          stageHint.textContent = "Start the camera, or play the touch harp";
+          statStrings.textContent = 0;
+        }
+      }
+      document.getElementById("btnCamera").addEventListener("click", startCamera);
+      document.getElementById("ctaCamera").addEventListener("click", startCamera);
+      document.getElementById("ctaTouch").addEventListener("click", function () { ensureAudio(); enableTouch(); });
+      document.getElementById("btnTouch").addEventListener("click", function () {
+        ensureAudio();
+        if (touchOn) disableTouch(); else enableTouch();
+      });
+      function wireToggle(id, fn) {
+        var el = document.getElementById(id);
+        el.addEventListener("click", function () {
+          var on = el.getAttribute("aria-pressed") !== "true";
+          el.setAttribute("aria-pressed", on ? "true" : "false");
+          fn(on);
+        });
+      }
+      wireToggle("tglSkeleton", function (on) { showSkeleton = on; });
+      wireToggle("tglSparks", function (on) { showSparks = on; });
+      wireToggle("tglReverb", function (on) {
+        useReverb = on;
+        if (verbGain) verbGain.gain.setTargetAtTime(on ? 0.33 : 0, AC.currentTime, 0.05);
+      });
+      document.getElementById("rngVol").addEventListener("input", function (e) {
+        if (master) master.gain.setTargetAtTime(e.target.value / 100 * 0.9, AC.currentTime, 0.03);
+      });
+      document.getElementById("selScale").addEventListener("change", function () { ksCache = {}; });
+    </script>
+  </body>
+</html>
