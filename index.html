@@ -403,6 +403,11 @@
       var touchOn = false;
       var handsMP = null, mpCamera = null;
       var latestHands = [];         // [{pts:[{x,y}...]}] in canvas px, mirrored
+      var smoothHands = [];         // EMA-smoothed landmarks — raw MediaPipe points jitter every frame
+      var pitchFrame = 0;           // increments each render frame; guards once-per-frame smoothing
+      var bowFreqSmooth = 0, bowOffFrames = 0;
+      var mouthFreqSmooth = 0;
+      var createPinchFrames = 0;    // pinch must hold 2 frames to lock a line (no accidental locks)
       var stringState = {};         // id -> persistent per-string state
       var particles = [];
       var ghosts = [];
@@ -490,7 +495,7 @@
         if (AC) { if (AC.state === "suspended") AC.resume(); return; }
         var Ctor = window.AudioContext || window.webkitAudioContext;
         if (!Ctor) return;
-        AC = new Ctor();
+        try { AC = new Ctor({ latencyHint: "interactive" }); } catch (e) { AC = new Ctor(); }
         var comp = AC.createDynamicsCompressor();
         comp.threshold.value = -18; comp.ratio.value = 6;
         comp.connect(AC.destination);
@@ -716,7 +721,27 @@
             hands.push({ npts: npts });
           }
         }
-        latestHands = hands;
+        // Smooth every landmark with an exponential moving average, matching
+        // each new hand to the nearest previous hand by its wrist. Raw points
+        // jitter a few px every frame — that jitter was feeding straight into
+        // pinch detection, bow touch, flick energy and pitch, i.e. the noise.
+        var next = [];
+        hands.forEach(function (h) {
+          var best = null, bestD = 1e9;
+          smoothHands.forEach(function (sh) {
+            var d = Math.hypot(h.npts[0].x - sh.npts[0].x, h.npts[0].y - sh.npts[0].y);
+            if (d < bestD) { bestD = d; best = sh; }
+          });
+          if (best && bestD < 0.12) {
+            next.push({ npts: best.npts.map(function (pt, j) {
+              return { x: pt.x * 0.55 + h.npts[j].x * 0.45, y: pt.y * 0.55 + h.npts[j].y * 0.45 };
+            }) });
+          } else {
+            next.push(h); // new hand in view: take it as-is, smooth from next frame
+          }
+        });
+        smoothHands = next;
+        latestHands = smoothHands;
       }
       /* normalized landmark -> canvas px, through the same cover-fit
          crop the video is drawn with, so fingertips sit exactly on the picture */
@@ -781,7 +806,7 @@
       }
       function stopMouthVoice() {
         if (!mouthVoice) return;
-        var mv = mouthVoice; mouthVoice = null;
+        var mv = mouthVoice; mouthVoice = null; mouthFreqSmooth = 0;
         try {
           mv.out.gain.setTargetAtTime(0, AC.currentTime, 0.05);
           var t = AC.currentTime + 0.3;
@@ -813,7 +838,8 @@
           var freq = midiToFreq(midi);
           if (!mouthVoice) startMouthVoice();
           if (mouthVoice) {
-            mouthVoice.osc.frequency.setTargetAtTime(freq, AC.currentTime, 0.03);
+            mouthFreqSmooth = mouthFreqSmooth ? mouthFreqSmooth * 0.7 + freq * 0.3 : freq;
+            mouthVoice.osc.frequency.setTargetAtTime(mouthFreqSmooth, AC.currentTime, 0.03);
             mouthVoice.out.gain.setTargetAtTime(0.10 + mouthOpen * 0.55, AC.currentTime, 0.05);
             if (midi !== mouthVoice.midi) {
               mouthVoice.midi = midi;
@@ -850,7 +876,7 @@
               if (mouthOn && faceMeshMP) return pr.then(function () { return faceMeshMP.send({ image: video }).catch(function () {}); });
               return pr;
             },
-            width: 1280, height: 720
+            width: 640, height: 480
           });
           var p = mpCamera.start();
           if (p && p.catch) p.catch(function () {});
@@ -938,6 +964,7 @@
         labels.push({ x: mx, y: my - 14, text: p.name, t0: now, kind: s.kind });
         ghosts.push({ a: { x: s.a.x, y: s.a.y }, b: { x: s.b.x, y: s.b.y }, t0: now, kind: s.kind });
         if (showSparks) {
+          if (particles.length > 120) particles.splice(0, particles.length - 120);
           for (var i = 0; i < 16; i++) {
             var tt = Math.random();
             particles.push({
@@ -977,7 +1004,7 @@
       function linePitch(line) {
         if (!line) return null;
         var len = distPt(line.a, line.b);
-        line.lenSmooth = line.lenSmooth ? line.lenSmooth * 0.82 + len * 0.18 : len;
+        if (line._lsFrame !== pitchFrame) { line._lsFrame = pitchFrame; line.lenSmooth = line.lenSmooth ? line.lenSmooth * 0.82 + len * 0.18 : len; }
         if (line.tuning) {
           var ratio = clamp(line.refLen / Math.max(1, line.lenSmooth), 0.5, 2);
           var freq = line.tuning.freq * ratio;
@@ -1039,7 +1066,7 @@
         ctx.strokeStyle = locked ? "rgba(255, 217, 122, 0.30)" : "rgba(255, 217, 122, 0.18)";
         ctx.lineWidth = 7;
         ctx.shadowColor = "rgba(255, 217, 122, 0.9)";
-        ctx.shadowBlur = 16;
+        ctx.shadowBlur = 8;
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.shadowBlur = 0;
@@ -1050,7 +1077,7 @@
         [a, b].forEach(function (p) {
           ctx.beginPath();
           ctx.fillStyle = locked ? "rgba(255,244,214,0.95)" : "rgba(255,244,214,0.6)";
-          ctx.shadowColor = "rgba(255,217,122,0.9)"; ctx.shadowBlur = 10;
+          ctx.shadowColor = "rgba(255,217,122,0.9)"; ctx.shadowBlur = 6;
           ctx.arc(p.x, p.y, locked ? 6 : 4.5, 0, Math.PI * 2); ctx.fill();
           ctx.shadowBlur = 0;
         });
@@ -1081,13 +1108,19 @@
         statStrings.textContent = 0;
         if (createStep === 1) {
           stageHint.textContent = "Step 1 of 2 — pinch thumb + index on ONE hand";
+          var pinched1 = false;
           for (var hi = 0; hi < hs.length; hi++) {
             if (isPinch(hs[hi].pts)) {
-              createAnchorA = pinchPoint(hs[hi].pts);
-              createStep = 2;
+              pinched1 = true;
+              createPinchFrames++;
+              if (createPinchFrames >= 2) {
+                createAnchorA = pinchPoint(hs[hi].pts);
+                createStep = 2; createPinchFrames = 0;
+              }
               break;
             }
           }
+          if (!pinched1) createPinchFrames = 0;
           if (createAnchorA) drawAnchorMarker(createAnchorA);
           return;
         }
@@ -1099,6 +1132,9 @@
             var pp = pinchPoint(hs[hj].pts);
             if (distPt(pp, createAnchorA) < W * 0.12) continue; // same hand as step 1 — wait for the other one
             drawStretchLine(createAnchorA, pp, false, now); // preview while the second hand pinches
+            createPinchFrames++;
+            if (createPinchFrames < 2) continue; // hold the pinch a beat so a flicker can't lock a bad line
+            createPinchFrames = 0;
             if (!createAppend) { stopBow(); stretchLines = []; }
             addStretchLine(createAnchorA, pp, null);
             stretchPitch();
@@ -1137,7 +1173,7 @@
         hs.forEach(function (h, hi) {
           var pp = pinchPoint(h.pts);
           if (stretchHold && stretchHold.hand === hi) {
-            if (isPinch(h.pts)) { stretchHold.line[stretchHold.end] = { x: pp.x, y: pp.y }; held = true; }
+            if (isPinch(h.pts)) { var _o = stretchHold.line[stretchHold.end]; stretchHold.line[stretchHold.end] = { x: _o.x + (pp.x - _o.x) * 0.5, y: _o.y + (pp.y - _o.y) * 0.5 }; held = true; }
             else stretchHold = null;
             return;
           }
@@ -1160,7 +1196,7 @@
           var hh = hs[stretchHold.hand];
           if (hh && isPinch(hh.pts)) {
             var pp2 = pinchPoint(hh.pts);
-            stretchHold.line[stretchHold.end] = { x: pp2.x, y: pp2.y };
+            var _o2 = stretchHold.line[stretchHold.end]; stretchHold.line[stretchHold.end] = { x: _o2.x + (pp2.x - _o2.x) * 0.5, y: _o2.y + (pp2.y - _o2.y) * 0.5 };
             held = true;
           } else stretchHold = null;
         }
@@ -1180,13 +1216,15 @@
           });
         });
         if (touchPt && touchD < 18 && touchLine) {
+          bowOffFrames = 0;
           activeLine = touchLine;
           var p = stretchPitch(touchLine);
+          bowFreqSmooth = bowFreqSmooth ? bowFreqSmooth * 0.65 + p.freq * 0.35 : p.freq;
           if (!bowActive) {
-            startBow(p.freq);
+            startBow(bowFreqSmooth);
             labels.push({ x: touchPt.x, y: touchPt.y - 14, text: p.name, t0: now, kind: "pair" });
           } else {
-            updateBow(p.freq);
+            updateBow(bowFreqSmooth);
           }
           stretchVib.vibT0 = now; stretchVib.vibAmp = 4; stretchVib.vibFreq = clamp(p.freq / 26, 7, 26);
           if (showSparks && now - bowSparkT0 > 90) {
@@ -1200,7 +1238,15 @@
             }
           }
         } else if (bowActive) {
-          stopBow();
+          // Hysteresis: a fingertip hovering at the 18px edge used to chop the
+          // note on/off every frame. Keep playing until it is clearly away
+          // (>28px) for 3 frames in a row.
+          if (!touchPt || touchD > 28) {
+            bowOffFrames++;
+            if (bowOffFrames >= 3) { stopBow(); bowFreqSmooth = 0; bowOffFrames = 0; }
+          } else {
+            bowOffFrames = 0;
+          }
         }
         stretchLines.forEach(function (line) {
           var lp = linePitch(line);
@@ -1227,7 +1273,7 @@
           if (!st) {
             st = stringState[s.id] = { prevA: s.a, prevB: s.b, prevLen: 0, prevT: now, lastPluck: 0, vibT0: -1e9, vibAmp: 0, vibFreq: 10 };
           }
-          var dt = Math.max(1, now - st.prevT) / 1000;
+          var dt = clamp((now - st.prevT) / 1000, 0.016, 0.1); // a dropped frame must not spike into a false pluck
           var len = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
           var spA = Math.hypot(s.a.x - st.prevA.x, s.a.y - st.prevA.y) / dt;
           var spB = Math.hypot(s.b.x - st.prevB.x, s.b.y - st.prevB.y) / dt;
@@ -1279,7 +1325,7 @@
         [s.a, s.b].forEach(function (p) {
           ctx.beginPath();
           ctx.fillStyle = "rgba(255,244,214,0.95)";
-          ctx.shadowColor = "rgba(255,217,122,0.9)"; ctx.shadowBlur = 10;
+          ctx.shadowColor = "rgba(255,217,122,0.9)"; ctx.shadowBlur = 6;
           ctx.arc(p.x, p.y, 3.4, 0, Math.PI * 2); ctx.fill();
           ctx.shadowBlur = 0;
         });
@@ -1524,7 +1570,7 @@
           var a = 1 - (now - p.t0) / p.life;
           ctx.save();
           ctx.fillStyle = stringColor(p.kind, a * 0.95);
-          ctx.shadowColor = stringColor(p.kind, 0.9); ctx.shadowBlur = 8;
+          ctx.shadowBlur = 0; // particles: no glow — shadowBlur per particle was the frame-rate killer
           ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill();
           ctx.restore();
         });
@@ -1570,6 +1616,7 @@
         ctx.restore();
       }
       function render(now) {
+        pitchFrame++;
         ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
         ctx.clearRect(0, 0, W, H);
         if (cameraOn && video.readyState >= 2) drawVideoCover();
