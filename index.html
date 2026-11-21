@@ -1120,6 +1120,131 @@
         stretchNoteName = "—"; noteReadout.textContent = "—";
         createStep = 0; createAnchorA = null; createAppend = false;
       }
+      function updateAndDrawStrings(now) {
+        if (document.getElementById("selStrings").value === "stretch") { updateStretchLine(now); return []; }
+        var strings = buildStrings();
+        statStrings.textContent = strings.length;
+        var seen = {};
+        strings.forEach(function (s) {
+          seen[s.id] = true;
+          var st = stringState[s.id];
+          if (!st) {
+            st = stringState[s.id] = { prevA: s.a, prevB: s.b, prevLen: 0, prevT: now, lastPluck: 0, vibT0: -1e9, vibAmp: 0, vibFreq: 10 };
+          }
+          var dt = Math.max(1, now - st.prevT) / 1000;
+          var len = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+          var spA = Math.hypot(s.a.x - st.prevA.x, s.a.y - st.prevA.y) / dt;
+          var spB = Math.hypot(s.b.x - st.prevB.x, s.b.y - st.prevB.y) / dt;
+          var stretch = Math.abs(len - st.prevLen) / dt;
+          var energy = Math.max(Math.max(spA, spB), stretch * 1.35);
+          // a quick flick plucks: fast fingertip motion on a taut-enough thread
+          if (len > 42 && energy > W * 1.05 && now - st.lastPluck > 230) {
+            pluckString(s, st, clamp((energy - W * 1.05) / (W * 2.1) + 0.35, 0.2, 1), now);
+          }
+          st.prevA = { x: s.a.x, y: s.a.y };
+          st.prevB = { x: s.b.x, y: s.b.y };
+          st.prevLen = len; st.prevT = now;
+          drawString(s, st, now);
+        });
+        Object.keys(stringState).forEach(function (id) { if (!seen[id]) delete stringState[id]; });
+        return strings;
+      }
+
+      function drawString(s, st, now) {
+        var age = now - st.vibT0;
+        var amp = age < 900 ? st.vibAmp * Math.exp(-age / 260) : 0;
+        var phase = (now / 1000) * st.vibFreq * Math.PI * 2;
+        var dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+        var len = Math.max(1, Math.hypot(dx, dy));
+        var px = -dy / len, py = dx / len;
+        ctx.save();
+        ctx.lineCap = "round";
+        // glow pass
+        ctx.beginPath();
+        var SEG = 22;
+        for (var i = 0; i <= SEG; i++) {
+          var t = i / SEG;
+          var off = amp * Math.sin(Math.PI * t) * Math.sin(phase);
+          var x = s.a.x + dx * t + px * off, y = s.a.y + dy * t + py * off;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = stringColor(s.kind, 0.30);
+        ctx.lineWidth = 7;
+        ctx.shadowColor = stringColor(s.kind, 0.9);
+        ctx.shadowBlur = 16;
+        ctx.stroke();
+        // core pass
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = stringColor(s.kind, 0.95);
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+        // fingertip nodes
+        [s.a, s.b].forEach(function (p) {
+          ctx.beginPath();
+          ctx.fillStyle = "rgba(255,244,214,0.95)";
+          ctx.shadowColor = "rgba(255,217,122,0.9)"; ctx.shadowBlur = 10;
+          ctx.arc(p.x, p.y, 3.4, 0, Math.PI * 2); ctx.fill();
+          ctx.shadowBlur = 0;
+        });
+      }
+
+      function drawSkeleton() {
+        latestHands.forEach(function (hRaw) {
+          var h = { pts: handPx(hRaw) };
+          ctx.save();
+          ctx.strokeStyle = "rgba(120, 220, 160, 0.55)";
+          ctx.lineWidth = 1.4;
+          CONNECTIONS.forEach(function (c) {
+            ctx.beginPath();
+            ctx.moveTo(h.pts[c[0]].x, h.pts[c[0]].y);
+            ctx.lineTo(h.pts[c[1]].x, h.pts[c[1]].y);
+            ctx.stroke();
+          });
+          h.pts.forEach(function (p, i) {
+            ctx.beginPath();
+            ctx.fillStyle = FINGERTIPS.indexOf(i) >= 0 || i === 4 ? "rgba(255,120,110,0.95)" : "rgba(140,240,170,0.9)";
+            ctx.arc(p.x, p.y, FINGERTIPS.indexOf(i) >= 0 || i === 4 ? 3.6 : 2.4, 0, Math.PI * 2);
+            ctx.fill();
+          });
+          ctx.restore();
+        });
+      }
+
+      /* ---------------- touch harp ---------------- */
+      var TOUCH_N = 10;
+      var touchState = {}; // i -> {vibT0, vibAmp, vibFreq}
+      function touchNote(i) {
+        var scaleName = document.getElementById("selScale").value;
+        if (scaleName === "glide") {
+          var mf = BASE_MIDI + 5 + i * 2.4;
+          return { freq: midiToFreq(mf), name: midiName(mf) };
+        }
+        var scale = SCALES[scaleName] || SCALES.pentatonic;
+        var midi = BASE_MIDI + 12 * Math.floor(i / scale.length) + scale[i % scale.length];
+        return { freq: midiToFreq(midi), name: midiName(midi) };
+      }
+      function touchGeom(i) {
+        var x = (i + 0.5) / TOUCH_N * W;
+        return { x: x, y0: H * 0.07, y1: H * 0.93 };
+      }
+      function pluckTouch(i, velocity, now) {
+        var n = touchNote(i);
+        playNote(n.freq, n.name, velocity);
+        touchState[i] = { vibT0: now, vibAmp: 6 + velocity * 12, vibFreq: clamp(n.freq / 26, 7, 26) };
+        var g = touchGeom(i);
+        labels.push({ x: g.x, y: g.y0 + 26, text: n.name, t0: now, kind: "gold" });
+        if (showSparks) {
+          for (var k = 0; k < 12; k++) {
+            var tt = Math.random();
+            particles.push({
+              x: g.x, y: g.y0 + (g.y1 - g.y0) * tt,
+              vx: (Math.random() - 0.5) * 260, vy: (Math.random() - 0.5) * 120,
+              t0: now, life: 380 + Math.random() * 320, kind: "gold"
+            });
+          }
+        }
+      }
       function drawTouchStretch(now) {
         if (stretchLines.length > 0 || touchLine) {
           statStrings.textContent = stretchLines.length + (touchLine && touchAddLine ? 1 : 0);
