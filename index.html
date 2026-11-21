@@ -60,6 +60,10 @@
         display: flex; align-items: baseline; justify-content: space-between;
         gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
       }
+      .byline {
+        font-size: 0.82rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+        color: var(--gold); margin: 0 0 6px;
+      }
       .topbar h1 {
         font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em; margin: 0;
       }
@@ -206,6 +210,7 @@
     <div class="wrap">
       <div class="topbar">
         <div>
+          <p class="byline">Made by Ben Yahya</p>
           <h1>Air Harp <span class="thin">— strings of light, played with your hands</span></h1>
           <p>Hold your hands up to the camera. Threads stretch between your fingertips — pull them longer for low notes, shorter for high ones, and flick to pluck.</p>
         </div>
@@ -287,9 +292,7 @@
         </section>
       </div>
 
-      <footer>
-        Built after @sonicdeadhorse's TouchDesigner air harp — same idea, rebuilt for the browser: webcam in, music out.
-      </footer>
+
     </div>
 
     <script>
