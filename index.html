@@ -267,7 +267,7 @@
               <h1>Air Harp <span class="thin">— strings of light, played with your hands</span></h1>
             </div>
           </div>
-          <p>Pick your instrument first — harp, guitar, banjo, ukulele, violin, soft synth or bell — then hold your hands up to the camera. Tap <b>Add a line</b> to keep several different strings on screen at once. Threads stretch between your fingertips — pull them longer for low notes, shorter for high ones, and flick to pluck. On the stretch line, Chords (on by default) plays a whole chord that moves as you stretch; turn Chords off for a single note.</p>
+          <p>Pick your instrument first — harp, guitar, banjo, ukulele, violin, soft synth or bell — then hold your hands up to the camera. Tap <b>Add a line</b> to keep several different strings on screen at once. Threads stretch between your fingertips — pull them longer for low notes, shorter for high ones, and flick to pluck. <b>Harmony</b> is on by default, so every finger lands in the same key and on the same beat — no chaos. On the stretch line, Chords (on by default) plays a whole chord that moves as you stretch; turn Chords off for a single note.</p>
         </div>
         <div class="live-stats" id="liveStats">notes played <b id="statNotes">0</b> · strings <b id="statStrings">0</b></div>
       </div>
@@ -329,6 +329,7 @@
           <button class="btn small" id="tglSparks" type="button" aria-pressed="true">Sparks</button>
           <button class="btn small" id="tglReverb" type="button" aria-pressed="true">Reverb</button>
           <button class="btn small" id="tglChords" type="button" aria-pressed="true" title="Stretch line plays a chord (root + third + fifth) instead of one note">Chords</button>
+          <button class="btn small" id="tglHarmony" type="button" aria-pressed="true" title="Harmony: every finger lands in the same key, on the same beat">Harmony</button>
           <label for="rngVol">Volume</label>
           <input type="range" id="rngVol" min="0" max="100" value="80" />
         </div>
@@ -344,6 +345,7 @@
             <li><b>Stretch or shrink a thread</b> by moving your hands apart or together — longer is lower, shorter is higher, just like a real string.</li>
             <li><b>Flick a fingertip</b> quickly to pluck. The faster the flick, the louder the note, and sparks run along the thread.</li>
             <li>With <b>one hand</b>, threads fan out from your thumb to each fingertip instead — open and close your hand to change pitch, flick to play.</li>
+            <li><b>Harmony (on by default).</b> Every note snaps to the scale you picked, so one hand or two hands can never play out of key. When Chords is on, all your lines share ONE chord — the line you are playing sets the root, the other lines play its third, fifth and octave. Plucks also land on a gentle beat grid, so fingers that arrive a moment apart still sound together. Turn Harmony off if you want the free glide back.</li>
             <li><b>Several lines at once.</b> Tap <b>Add a line</b> after locking one line and make another — up to 6 lines on screen, each its own string with its own chord. <b>Left hand chooses, right hand plays:</b> pinch an end of a line with one hand to stretch it and choose its chord, touch a line with your other hand to play it — at the same time. Tap <b>New line</b> to clear them all and start over.</li>
             <li><b>Stretch line (two hands).</b> First pick your <b>Instrument</b> above — harp, guitar, banjo, ukulele, violin, soft synth or bell — and leave <b>Chords</b> on if you want a chord, or turn it off for a single note. Then tap <b>Create a line</b> and follow the two steps on screen: <b>Step 1</b> — pinch thumb + index (the big finger) on ONE hand to set the first end; <b>Step 2</b> — pinch thumb + index on your OTHER hand to set the second end, and the line locks between them. Then <b>pinch one end and pull it</b> to stretch the line — the chord (or note) glides smoothly, no steps (longer is lower, shorter is higher). <b>Touch the line with a fingertip of your other hand</b> to sound it while you stretch — hold it there to keep it going, lift it to stop. Press <b>New line</b> to start over. No camera? Drag on the stage to draw a line, drag an end to stretch it, touch and hold the line to play.</li>
             <li>No camera? The <b>touch harp</b> gives you ten strings on screen: press and drag across them, tap them, or use keys <span class="kbd">A</span>–<span class="kbd">;</span>.</li>
@@ -422,6 +424,8 @@
       var bowVoices = []; // [{osc, lfo, gain, filter, ratio}] — one voice per chord note
       var bowActive = false, bowFreq = 0, bowSparkT0 = 0;
       var chordOn = true; // stretch line plays a chord by default; toggle it off for a single note
+      var harmonyOn = true; // Harmony: snap every note to the scale, share one chord across lines, land plucks on the beat
+      var sharedRootMidi = null; // the chord root all lines share while Harmony is on
       var touchBowOn = false, touchBowFreq = 0;
       var touchLine = null;         // touch fallback: {a:{x,y}, b:{x,y}}
       var touchDragEnd = null;      // "a" | "b" | null
@@ -442,12 +446,27 @@
       }
       function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
 
+      /* Snap a continuous pitch to the nearest note of the chosen scale,
+         so any finger, any hand, any line always lands in key — no chaos. */
+      function snapMidi(mf) {
+        var scaleName = document.getElementById("selScale").value;
+        var scale = (scaleName === "glide") ? SCALES.pentatonic : (SCALES[scaleName] || SCALES.pentatonic);
+        var best = null, bestD = 1e9;
+        for (var m = Math.floor(mf) - 12; m <= Math.ceil(mf) + 12; m++) {
+          if (scale.indexOf(((m % 12) + 12) % 12) < 0) continue;
+          var d = Math.abs(m - mf);
+          if (d < bestD) { bestD = d; best = m; }
+        }
+        return best == null ? Math.round(mf) : best;
+      }
+
       /* pitch from string length. lenNorm 0 (short) .. 1 (long) */
       function pitchFromLength(lenPx) {
         var lenNorm = clamp(lenPx / (W * 0.82), 0, 1);
         var scaleName = document.getElementById("selScale").value;
         if (scaleName === "glide") {
           var mf = 84 - lenNorm * 33; // C6 down to ~C3, continuous
+          if (harmonyOn) { var sm = snapMidi(mf); return { freq: midiToFreq(sm), name: midiName(sm) }; }
           return { freq: midiToFreq(mf), name: midiName(mf) + " ~" };
         }
         var scale = SCALES[scaleName] || SCALES.pentatonic;
@@ -515,6 +534,7 @@
         velocity = clamp(velocity == null ? 0.8 : velocity, 0.08, 1);
         var engine = document.getElementById("selSound").value;
         var t = AC.currentTime;
+        if (harmonyOn) t = Math.ceil((t + 0.02) / 0.125) * 0.125; // land on the beat grid, max ~0.12s wait
         var out = AC.createGain(); out.gain.value = velocity;
         out.connect(master);
         if (useReverb) out.connect(verb);
@@ -865,6 +885,7 @@
         if (line.tuning) {
           var ratio = clamp(line.refLen / Math.max(1, line.lenSmooth), 0.5, 2);
           var freq = line.tuning.freq * ratio;
+          if (harmonyOn) freq = midiToFreq(snapMidi(freqToMidi(freq)));
           var name = midiName(freqToMidi(freq));
           if (chordOn) name += " maj";
           line.noteName = name;
@@ -872,6 +893,24 @@
         }
         var lenNorm = clamp(line.lenSmooth / (W * 0.82), 0, 1);
         var mf = 84 - lenNorm * 33;
+        if (harmonyOn) {
+          // the line being played sets the shared chord root; every other
+          // line plays a tone of THAT chord (root / third / fifth / octave),
+          // so two hands can never clash — they always harmonise.
+          if (chordOn && sharedRootMidi != null && line !== activeLine && stretchLines.indexOf(line) >= 0) {
+            var ci = stretchLines.indexOf(line) % 4;
+            var steps = [0, 4, 7, 12][ci];
+            var cf = midiToFreq(sharedRootMidi + steps);
+            var cn = midiName(sharedRootMidi + steps) + " maj";
+            line.noteName = cn;
+            return { freq: cf, name: cn };
+          }
+          var sm = snapMidi(mf);
+          if (chordOn) sharedRootMidi = sm;
+          var pr = { freq: midiToFreq(sm), name: chordRootName(sm) };
+          line.noteName = pr.name;
+          return pr;
+        }
         var pr = { freq: midiToFreq(mf), name: chordRootName(mf) };
         line.noteName = pr.name;
         return pr;
@@ -967,7 +1006,7 @@
             if (!createAppend) { stopBow(); stretchLines = []; }
             addStretchLine(createAnchorA, pp, null);
             stretchPitch();
-            createStep = 0; createAnchorA = null; createAppend = false; touchAddLine = false;
+            createStep = 0; createAnchorA = null; createAppend = false; touchAddLine = false; sharedRootMidi = null;
             stageHint.textContent = stretchLines.length > 1
               ? stretchLines.length + " lines — pinch an end with one hand to choose its chord, touch a line with your other hand to play it"
               : "Line locked — pinch an end to stretch it, touch it with your other hand to play";
@@ -1374,6 +1413,11 @@
       wireToggle("tglSparks", function (on) { showSparks = on; });
       wireToggle("tglChords", function (on) {
         chordOn = on;
+        if (bowActive) stopBow();
+      });
+      wireToggle("tglHarmony", function (on) {
+        harmonyOn = on;
+        sharedRootMidi = null;
         if (bowActive) stopBow();
       });
       document.getElementById("selSound").addEventListener("change", function () {
